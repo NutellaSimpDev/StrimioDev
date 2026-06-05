@@ -682,9 +682,28 @@ async function playOption(option, card, settings = {}) {
   showLoadingOverlay('Conectando a los peers...', 'Iniciando reproducción...', true);
   els.modalStatus.textContent = 'Iniciando stream de video y analizando pistas en segundo plano...';
 
-  const tracksPromise = fetch(`/api/stream/tracks/${option.infoHash}?${new URLSearchParams({ fileIdx: String(option.fileIdx ?? 0) })}`)
-    .then((r) => r.ok ? r.json() : { audio: [], subtitles: [] })
-    .catch(() => ({ audio: [], subtitles: [] }));
+  const fetchTracksWithRetry = async (attempts = 3) => {
+    try {
+      const response = await fetch(`/api/stream/tracks/${option.infoHash}?${new URLSearchParams({ fileIdx: String(option.fileIdx ?? 0) })}`);
+      if (!response.ok) throw new Error('Failed to fetch tracks');
+      const data = await response.json();
+      if ((!data.audio || data.audio.length === 0) && attempts > 1) {
+        if (activePlaybackOption !== option) return { audio: [], subtitles: [], duration: 0 };
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        return fetchTracksWithRetry(attempts - 1);
+      }
+      return data;
+    } catch {
+      if (attempts > 1) {
+        if (activePlaybackOption !== option) return { audio: [], subtitles: [], duration: 0 };
+        await new Promise(resolve => setTimeout(resolve, 4000));
+        return fetchTracksWithRetry(attempts - 1);
+      }
+      return { audio: [], subtitles: [], duration: 0 };
+    }
+  };
+
+  const tracksPromise = fetchTracksWithRetry(3);
 
   const initialTracksData = isLikelyHdrOption(option)
     ? await Promise.race([

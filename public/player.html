@@ -661,7 +661,7 @@
         return preferred?.index ?? audioTracks[0]?.index ?? 0;
       }
 
-      async function loadAudioTracks(option, fileIdx) {
+      async function loadAudioTracks(option, fileIdx, attempts = 3) {
         audioSelect.innerHTML = '<option>Detectando pistas de audio...</option>';
         audioSelect.disabled = true;
         
@@ -670,6 +670,13 @@
           const response = await fetch(`/api/stream/tracks/${option.infoHash}?${params}`);
           if (!response.ok) throw new Error('No se pudieron leer pistas');
           const data = await response.json();
+          
+          if ((!data.audio || data.audio.length === 0) && attempts > 1) {
+            if (currentOption !== option) return;
+            await new Promise(resolve => setTimeout(resolve, 4000));
+            return loadAudioTracks(option, fileIdx, attempts - 1);
+          }
+          
           const audio = data.audio || [];
           cachedAudioTracks = audio;
           
@@ -700,6 +707,11 @@
             });
           }, 200);
         } catch (error) {
+          if (attempts > 1) {
+            if (currentOption !== option) return;
+            await new Promise(resolve => setTimeout(resolve, 4000));
+            return loadAudioTracks(option, fileIdx, attempts - 1);
+          }
           audioSelect.innerHTML = '<option value="0">Audio original</option>';
           audioSelect.disabled = true;
         }
