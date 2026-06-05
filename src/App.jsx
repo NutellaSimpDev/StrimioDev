@@ -21,7 +21,12 @@ const tmdbToken = import.meta.env.VITE_TMDB_TOKEN;
 const tmdbImageBase = 'https://image.tmdb.org/t/p/w500';
 const region = import.meta.env.VITE_WATCH_REGION || 'US';
 const addonStorageKey = 'strimio.catalog.addons.v1';
-const defaultAddonUrl = 'https://v3-cinemeta.strem.io/manifest.json';
+const defaultAddonUrls = [
+  'https://v3-cinemeta.strem.io/manifest.json',
+  'https://caching.stremio.net/manifest.json',
+  'https://7a82163c306e-stremio-netflix-catalog-addon.baby-beamup.club/YmJjLHNoYSxpcWksY3JjLGFsNCxiYm8sYWN0LGl0djo6UEU6MTc3MTI5MTcxODM1MDowOjA6UEU%3D/manifest.json',
+  'https://cinemeta.ratingposterdb.com/manifest.json'
+];
 const categories = {
   home: { label: 'Inicio', type: 'all' },
   movie: { label: 'Peliculas', type: 'movie' },
@@ -213,9 +218,16 @@ function sortByLanguagePreference(items) {
 function loadAddonUrls() {
   try {
     const saved = JSON.parse(localStorage.getItem(addonStorageKey));
-    return Array.isArray(saved) && saved.length ? saved : [defaultAddonUrl];
+    if (Array.isArray(saved) && saved.length) {
+      const merged = [...saved];
+      defaultAddonUrls.forEach((url) => {
+        if (!merged.includes(url)) merged.push(url);
+      });
+      return merged;
+    }
+    return defaultAddonUrls;
   } catch {
-    return [defaultAddonUrl];
+    return defaultAddonUrls;
   }
 }
 
@@ -623,8 +635,9 @@ function App() {
 
   function removeCatalogAddon(url) {
     const nextUrls = addonUrls.filter((candidate) => candidate !== url);
-    setAddonUrls(nextUrls.length ? nextUrls : [defaultAddonUrl]);
-    saveAddonUrls(nextUrls.length ? nextUrls : [defaultAddonUrl]);
+    const fallback = nextUrls.length ? nextUrls : defaultAddonUrls;
+    setAddonUrls(fallback);
+    saveAddonUrls(fallback);
   }
 
   async function preparePlayer(item) {

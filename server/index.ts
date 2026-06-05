@@ -1,15 +1,20 @@
 import 'dotenv/config';
+import { readFile } from 'node:fs/promises';
+import { join, normalize } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { resolveUnifiedPlayback } from '../src/unifiedContentResolver.js';
 import catalogRouter, { seriesRouter } from './catalog.js';
 import animeRouter from './providers/anime.js';
 import { authorizePlayback, getAuthorizedSession, isHashAuthorized } from './sessionStore.js';
-import { findSubtitle, hasSubtitleProvidersConfigured, subsDir } from './subtitles.js';
+import { findSubtitle, findSubtitles, hasSubtitleProvidersConfigured, subsDir } from './subtitles.js';
 import {
+  cleanupTorrentTemp,
   getMediaTracks,
   getTorrentStats,
+  shutdownTorrentEngine,
   startTorrentDiscovery,
+  stopTorrent,
   streamEmbeddedSubtitle,
   streamTorrentFile,
   transcodeTorrentFile
@@ -23,14 +28,61 @@ const defaultLanguages = (process.env.STRIMIO_LANGUAGES || 'lat,spa,eng')
   .map((lang) => lang.trim())
   .filter(Boolean);
 
+if (process.env.STRIMIO_CLEAN_TEMP_ON_START !== 'false') {
+  await cleanupTorrentTemp().catch((error) => {
+    console.warn('[startup] No se pudo limpiar cache temporal de torrents:', error instanceof Error ? error.message : String(error));
+  });
+}
+
 app.use(cors());
 app.use(express.json());
-app.use('/subtitles', express.static(subsDir, {
-  setHeaders(response) {
-    response.setHeader('Access-Control-Allow-Origin', '*');
-    response.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+
+function parseTimestamp(value: string) {
+  const match = value.trim().match(/(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})/);
+  if (!match) return null;
+  return (Number(match[1] || 0) * 3600) + (Number(match[2]) * 60) + Number(match[3]) + (Number(match[4]) / 1000);
+}
+
+function formatTimestamp(totalSeconds: number) {
+  const safe = Math.max(0, totalSeconds);
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = Math.floor(safe % 60);
+  const millis = Math.floor((safe - Math.floor(safe)) * 1000);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+}
+
+function offsetVtt(vtt: string, offsetSeconds: number) {
+  if (!offsetSeconds) return vtt;
+  return vtt.split('\n').map((line) => {
+    if (!line.includes('-->')) return line;
+    const [startRaw, restRaw] = line.split('-->');
+    const [endRaw, ...settings] = restRaw.trim().split(/\s+/);
+    const start = parseTimestamp(startRaw);
+    const end = parseTimestamp(endRaw);
+    if (start === null || end === null || end <= offsetSeconds) return null;
+    const suffix = settings.length ? ` ${settings.join(' ')}` : '';
+    return `${formatTimestamp(start - offsetSeconds)} --> ${formatTimestamp(end - offsetSeconds)}${suffix}`;
+  }).filter((line) => line !== null).join('\n');
+}
+
+app.get('/subtitles/:file', async (req, res) => {
+  try {
+    const file = normalize(req.params.file);
+    if (file.includes('..') || !file.endsWith('.vtt')) {
+      res.status(400).send('Subtitulo invalido.');
+      return;
+    }
+
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const text = await readFile(join(subsDir, file), 'utf8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+    res.send(offsetVtt(text, Number.isFinite(offset) ? offset : 0));
+  } catch (error) {
+    res.status(404).send(error instanceof Error ? error.message : String(error));
   }
-}));
+});
 app.use(express.static('public'));
 
 app.get('/api/health', (_req, res) => {
@@ -71,6 +123,9 @@ app.get('/api/resolve', async (req, res) => {
         limit: req.query.annatarLimit ? Number(req.query.annatarLimit) : undefined,
         timeout: req.query.annatarTimeout ? Number(req.query.annatarTimeout) : undefined,
         isAuthorizedStream: () => allowUnverified
+      },
+      stremio: {
+        streamAddons: req.query.stremioStreamAddons ? String(req.query.stremioStreamAddons) : process.env.STREMIO_STREAM_ADDONS
       }
     }) as ResolveResponse;
 
@@ -174,7 +229,13 @@ app.get('/api/stream/stats/:infoHash', async (req, res) => {
   }
 
   await startTorrentDiscovery(infoHash, fileIdx);
-  res.json(getTorrentStats(infoHash));
+  res.json(getTorrentStats(infoHash, fileIdx));
+});
+
+app.post('/api/stream/stop/:infoHash', async (req, res) => {
+  const infoHash = req.params.infoHash;
+  await stopTorrent(infoHash);
+  res.json({ ok: true, stopped: infoHash });
 });
 
 app.get('/api/subtitles', async (req, res) => {
@@ -217,17 +278,46 @@ app.get('/api/subtitles/batch', async (req, res) => {
   const filename = req.query.filename ? String(req.query.filename) : session?.filename;
   const languages = req.query.langs ? String(req.query.langs).split(',') : defaultLanguages;
 
-  const settled = await Promise.allSettled(languages.map((lang) => findSubtitle({ imdbId, lang, filename, type, season, episode })));
+  const settled = await Promise.allSettled(languages.map((lang) => findSubtitles({ imdbId, lang, filename, type, season, episode }, 3)));
   res.json({
     providersConfigured: hasSubtitleProvidersConfigured(),
-    subtitles: settled.flatMap((result) => result.status === 'fulfilled' && result.value ? [result.value] : []),
+    subtitles: settled.flatMap((result) => result.status === 'fulfilled' ? result.value : []),
     errors: settled.flatMap((result) => result.status === 'rejected' ? [result.reason?.message || String(result.reason)] : [])
   });
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   console.log(`Strimio local streamer listo en http://localhost:${port}`);
   console.log(`Player: http://localhost:${port}/player.html`);
+});
+
+let gracefulShutdownStarted = false;
+
+async function gracefulShutdown(signal: string) {
+  if (gracefulShutdownStarted) return;
+  gracefulShutdownStarted = true;
+  console.log(`[shutdown] Cerrando StrimioDev por ${signal}...`);
+
+  await new Promise<void>((resolve) => {
+    server.close(() => resolve());
+    setTimeout(resolve, 2500).unref();
+  });
+
+  await shutdownTorrentEngine({
+    cleanupTemp: process.env.STRIMIO_CLEAN_TEMP_ON_EXIT !== 'false'
+  }).catch((error) => {
+    console.warn('[shutdown] No se pudo limpiar cache temporal:', error instanceof Error ? error.message : String(error));
+  });
+
+  process.exit(0);
+}
+
+process.on('SIGINT', () => {
+  void gracefulShutdown('SIGINT');
+});
+
+process.on('SIGTERM', () => {
+  void gracefulShutdown('SIGTERM');
 });
 
 let lastKnownTorrentExceptionAt = 0;

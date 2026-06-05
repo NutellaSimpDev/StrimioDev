@@ -1,6 +1,26 @@
 import { getAnimeEpisodeSources } from './clients/anicliClient.js';
 import { getAnnatarStreams } from './clients/annatarClient.js';
 import { getTorrentioStreams } from './clients/torrentioClient.js';
+import { fetchGenericStremioStreams } from './clients/genericStremioClient.js';
+
+function normalizeStremioAddonUrl(input) {
+  return String(input || '')
+    .trim()
+    .replace(/^stremio:\/\//i, 'https://')
+    .replace(/\/manifest\.json(?:\?.*)?$/i, '')
+    .replace(/\/+$/, '');
+}
+
+function configuredStreamAddons(addonsValue = '') {
+  return String(addonsValue || '')
+    .split(',')
+    .map(normalizeStremioAddonUrl)
+    .filter(Boolean)
+    .map((url) => ({
+      name: new URL(url).hostname.split('.')[0],
+      url
+    }));
+}
 
 function sortPlaybackOptions(a, b) {
   if (Number(b.authorized) !== Number(a.authorized)) return Number(b.authorized) - Number(a.authorized);
@@ -37,9 +57,12 @@ export async function resolveUnifiedPlayback({
   torrentio = {},
   annatar = {},
   anicli = {},
+  stremio = {},
   fetchImpl = fetch
 }) {
   const tasks = [];
+
+  const streamAddons = configuredStreamAddons(stremio.streamAddons);
 
   if (id) {
     tasks.push(getTorrentioStreams({
@@ -61,6 +84,22 @@ export async function resolveUnifiedPlayback({
         ...annatar
       }));
     }
+
+    streamAddons.forEach((addon) => {
+      tasks.push(fetchGenericStremioStreams({
+        addonUrl: addon.url,
+        addonName: addon.name,
+        id,
+        type,
+        season,
+        episode,
+        fetchImpl,
+        isAuthorizedStream: () => torrentio.isAuthorizedStream?.() || false
+      }).catch((err) => {
+        console.warn(`[StremioStreamAddon] Error fetching from ${addon.name}:`, err.message);
+        return [];
+      }));
+    });
   }
 
   if (animeTitle && animeEpisode && anicli.apiBaseUrl) {

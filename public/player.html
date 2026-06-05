@@ -146,6 +146,7 @@
       }
 
       .player-wrap {
+        position: relative;
         overflow: hidden;
         background: black;
         border: 1px solid var(--line);
@@ -158,11 +159,155 @@
         background: #000;
       }
 
-      .status {
-        padding: 12px;
-        background: rgba(255, 255, 255, 0.06);
+      /* Custom Buffering Overlay Styles */
+      #loadingOverlay {
+        transition: opacity 0.35s cubic-bezier(0.25, 1, 0.5, 1);
+      }
+      #loadingOverlay.visible {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      #loadingOverlayCard {
+        transform: scale(0.92);
+        transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+      #loadingOverlay.visible #loadingOverlayCard {
+        transform: scale(1);
+      }
+
+      /* Premium Plyr Custom Styles */
+      .plyr--video {
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .plyr__menu__container {
+        background: rgba(15, 15, 18, 0.88) !important;
+        backdrop-filter: blur(16px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6) !important;
+        padding: 6px !important;
+      }
+      .plyr__menu__container [role="menu"] {
+        max-height: 260px !important;
+        overflow-y: auto !important;
+      }
+      .plyr__menu__container [role="menu"]::-webkit-scrollbar {
+        width: 4px;
+      }
+      .plyr__menu__container [role="menu"]::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .plyr__menu__container [role="menu"]::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 2px;
+      }
+      .plyr__menu__container [role="menu"]::-webkit-scrollbar-thumb:hover {
+        background: rgba(255, 255, 255, 0.3);
+      }
+      .plyr__control {
+        font-family: inherit !important;
+        font-size: 13px !important;
+        font-weight: 600 !important;
+        border-radius: 6px !important;
+        transition: background 0.2s ease, color 0.2s ease !important;
+      }
+      .plyr__control:hover {
+        background: rgba(255, 255, 255, 0.08) !important;
+        color: #fff !important;
+      }
+      .plyr__control[aria-checked="true"] {
+        color: #e50914 !important;
+        background: rgba(229, 9, 20, 0.12) !important;
+      }
+      .plyr__control[aria-checked="true"]::after {
+        background: #e50914 !important;
+      }
+      .plyr__menu__value {
+        color: #a1a1aa !important;
+        font-weight: 500 !important;
+      }
+      .plyr__control--back {
+        font-weight: 700 !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+        margin-bottom: 4px !important;
+        border-radius: 0 !important;
+      }
+
+      /* Premium Glassmorphism Captions */
+      .plyr__captions {
+        padding: 16px !important;
+      }
+      .plyr__caption {
+        background: rgba(9, 9, 11, 0.82) !important;
+        backdrop-filter: blur(8px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        border-radius: 8px !important;
+        padding: 6px 14px !important;
+        font-size: clamp(14px, 2vw, 20px) !important;
+        font-weight: 500 !important;
+        line-height: 1.5 !important;
+        letter-spacing: -0.010em !important;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4) !important;
+      }
+
+      /* Option Stagger Animation */
+      @keyframes fadeInUp {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      .option {
+        opacity: 0;
+        animation: fadeInUp 0.35s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+      }
+
+      /* Pulsing Status dot styles */
+      .status-container {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 16px;
+        background: rgba(255, 255, 255, 0.04);
         border: 1px solid var(--line);
         border-radius: 8px;
+        font-size: 0.8rem;
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .status-dot {
+        position: relative;
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        background-color: var(--accent);
+        border-radius: 50%;
+      }
+
+      .status-dot::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        background-color: var(--accent);
+        animation: status-pulse 1.5s infinite ease-in-out;
+      }
+
+      @keyframes status-pulse {
+        0% {
+          transform: scale(1);
+          opacity: 0.8;
+        }
+        100% {
+          transform: scale(2.5);
+          opacity: 0;
+        }
       }
 
       @media (max-width: 900px) {
@@ -205,6 +350,24 @@
       <section class="stage">
         <div class="player-wrap">
           <video id="player" controls crossorigin playsinline></video>
+          <!-- Buffering/Loading Overlay -->
+          <div id="loadingOverlay" class="pointer-events-none absolute inset-0 flex items-center justify-center bg-zinc-950/80 px-6 text-center backdrop-blur-md opacity-0 z-20">
+            <div class="w-full max-w-md bg-zinc-900/60 border border-white/5 rounded-2xl p-6 shadow-2xl backdrop-blur-lg" id="loadingOverlayCard">
+              <div class="relative mx-auto h-16 w-16 mb-4">
+                <div class="absolute inset-0 rounded-full border-4 border-white/5"></div>
+                <div class="absolute inset-0 rounded-full border-4 border-t-red-600 animate-spin shadow-[0_0_12px_rgba(229,9,20,0.5)]"></div>
+              </div>
+              <div>
+                <h4 id="loadingTitle" class="text-lg font-black text-white tracking-wide">Conectando a los peers...</h4>
+                <p id="loadingDetail" class="mt-2 text-sm text-zinc-400 font-medium">Preparando buffer inicial.</p>
+              </div>
+              <div class="mt-5">
+                <div class="h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div id="loadingProgress" class="h-full w-0 rounded-full bg-red-600 shadow-[0_0_8px_rgba(229,9,20,0.6)] transition-all duration-500 ease-out"></div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <div style="display: none;">
           <label style="margin-top: 0;">
@@ -214,7 +377,10 @@
             </select>
           </label>
         </div>
-        <div class="status" id="status">Listo para resolver fuentes locales.</div>
+        <div class="status-container">
+          <span class="status-dot"></span>
+          <span id="status">Listo para resolver fuentes locales.</span>
+        </div>
       </section>
     </main>
 
@@ -231,12 +397,14 @@
         },
         configurable: true
       });
-      
+
       let customDuration = 0;
+      let currentStartTime = 0;
+
       const originalDurationDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
       Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
         get() {
-          if (customDuration > 0 && (this === playerElement || this.id === 'player' || this.id === 'modalVideo')) {
+          if (customDuration > 0 && (this === playerElement || this.id === 'player')) {
             return customDuration;
           }
           return originalDurationDescriptor.get.call(this);
@@ -244,11 +412,85 @@
         configurable: true
       });
 
+      const originalCurrentTimeDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+      Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+        get() {
+          if (currentStartTime > 0 && (this === playerElement || this.id === 'player')) {
+            return currentStartTime + originalCurrentTimeDescriptor.get.call(this);
+          }
+          return originalCurrentTimeDescriptor.get.call(this);
+        },
+        set(val) {
+          const isTranscoded = currentOption?.infoHash;
+          if (isTranscoded && currentStartTime > 0 && val === 0) {
+            originalCurrentTimeDescriptor.set.call(this, 0);
+            return;
+          }
+          if (isTranscoded) {
+            const currentDisplayTime = currentStartTime + originalCurrentTimeDescriptor.get.call(this);
+            if (Math.abs(val - currentDisplayTime) > 1.5) {
+              currentStartTime = val;
+              reloadStreamAtTime(val);
+              originalCurrentTimeDescriptor.set.call(this, 0);
+              return;
+            }
+          }
+          originalCurrentTimeDescriptor.set.call(this, val);
+        },
+        configurable: true
+      });
+
       function setOverrideDuration(duration) {
         customDuration = duration;
-        const el = playerElement;
-        if (el) el.dispatchEvent(new Event('durationchange'));
+        const video = playerElement;
+        if (video) video.dispatchEvent(new Event('durationchange'));
       }
+
+      function reloadStreamAtTime(time) {
+        if (!currentOption) return;
+        
+        if (trackSwapTimeRestorationListener) {
+          playerElement.removeEventListener('loadedmetadata', trackSwapTimeRestorationListener);
+          trackSwapTimeRestorationListener = null;
+        }
+        
+        showLoadingOverlay('Buscando...', `Saltando al segundo ${Math.round(time)}...`, false);
+        
+        const params = new URLSearchParams({
+          fileIdx: String(currentFileIdx),
+          audioIdx: String(selectedAudioTrack)
+        });
+        if (time > 0) {
+          params.set('startTime', String(time));
+        }
+
+        player.source = {
+          type: 'video',
+          title: currentOption.title,
+          sources: [
+            {
+              src: `/api/stream/${currentOption.infoHash}?${params}`,
+              type: 'video/mp4',
+              size: Number.parseInt(currentOption.quality, 10) || 1080
+            }
+          ]
+        };
+
+        setTimeout(() => {
+          setupPlyrAudioMenu(player, cachedAudioTracks, selectedAudioTrack, (trackIdx) => {
+            selectedAudioTrack = trackIdx;
+            audioSelect.value = String(trackIdx);
+            const btn = document.querySelector('.option.active');
+            if (btn) {
+              playOption(currentOption, btn, { keepTrackControls: true });
+            }
+          });
+        }, 200);
+
+        player.play().catch(() => {});
+      }
+      
+
 
       player = new Plyr(playerElement, {
         captions: { active: true, language: 'es', update: true },
@@ -260,6 +502,110 @@
       function setStatus(message) {
         statusEl.textContent = message;
       }
+
+      const loadingOverlay = document.getElementById('loadingOverlay');
+      const loadingTitle = document.getElementById('loadingTitle');
+      const loadingDetail = document.getElementById('loadingDetail');
+      const loadingProgress = document.getElementById('loadingProgress');
+
+      let statsTimer = null;
+      let lastTorrentProgress = 0;
+      let lastObservedTime = 0;
+
+      function showLoadingOverlay(message = 'Conectando a los peers...', detail = 'Preparando buffer inicial.', resetProgress = false) {
+        loadingTitle.textContent = message;
+        loadingDetail.textContent = detail;
+        if (resetProgress) {
+          lastTorrentProgress = 0;
+          loadingProgress.style.width = '0%';
+        }
+        loadingOverlay.classList.add('visible');
+      }
+
+      function hideLoadingOverlay() {
+        loadingOverlay.classList.remove('visible');
+        if (statsTimer) {
+          clearInterval(statsTimer);
+          statsTimer = null;
+        }
+      }
+
+      function maybeHideOverlayForPlayback() {
+        const video = playerElement;
+        const advanced = video.currentTime > 0 && video.currentTime !== lastObservedTime;
+        lastObservedTime = video.currentTime;
+        if (video.readyState >= 3 || (!video.paused && (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || advanced))) {
+          hideLoadingOverlay();
+        }
+      }
+
+      async function pollTorrentStats(option) {
+        if (statsTimer) clearInterval(statsTimer);
+
+        const update = async () => {
+          try {
+            const params = new URLSearchParams({ fileIdx: String(option.fileIdx ?? 0) });
+            const response = await fetch(`/api/stream/stats/${option.infoHash}?${params}`);
+            const stats = await response.json();
+            if (!response.ok) throw new Error(stats.error || 'No se pudieron leer estadisticas.');
+
+            lastTorrentProgress = Math.max(lastTorrentProgress, Math.min(100, stats.progress || 0));
+            loadingProgress.style.width = `${lastTorrentProgress}%`;
+            if (!stats.numPeers) {
+              loadingTitle.textContent = 'Conectando a los peers...';
+              loadingDetail.textContent = `Buffering: ${stats.progress}% - ${stats.downloadSpeed} - sin peers conectados`;
+              return;
+            }
+
+            loadingTitle.textContent = 'Buffering inicial...';
+            loadingDetail.textContent = `Buffering: ${stats.progress}% - Descargando a ${stats.downloadSpeed} - ${stats.numPeers} peers conectados - ETA ${stats.timeRemaining}`;
+          } catch (error) {
+            loadingTitle.textContent = 'Esperando datos del torrent...';
+            loadingDetail.textContent = error.message;
+          }
+        };
+
+        await update();
+        statsTimer = setInterval(update, 1000);
+      }
+
+      player.on('canplay', () => {
+        if (loadingOverlay.classList.contains('visible')) {
+          loadingTitle.textContent = 'Buffer listo';
+          loadingDetail.textContent = 'Esperando reproducción estable...';
+        }
+        maybeHideOverlayForPlayback();
+      });
+      player.on('loadeddata', maybeHideOverlayForPlayback);
+      player.on('progress', maybeHideOverlayForPlayback);
+      player.on('playing', () => {
+        hideLoadingOverlay();
+      });
+      player.on('timeupdate', maybeHideOverlayForPlayback);
+      player.on('waiting', () => {
+        if (currentOption?.infoHash) {
+          showLoadingOverlay('Buffering...', 'El navegador está esperando más datos del torrent.', false);
+          if (!statsTimer) pollTorrentStats(currentOption);
+        }
+      });
+      player.on('stalled', () => {
+        if (currentOption?.infoHash) {
+          showLoadingOverlay('Conexión pausada...', 'Reintentando descarga desde peers activos.', false);
+          if (!statsTimer) pollTorrentStats(currentOption);
+        }
+      });
+      player.on('ready', () => {
+        if (cachedAudioTracks && cachedAudioTracks.length > 1) {
+          setupPlyrAudioMenu(player, cachedAudioTracks, selectedAudioTrack, (trackIdx) => {
+            selectedAudioTrack = trackIdx;
+            audioSelect.value = String(trackIdx);
+            const btn = document.querySelector('.option.active');
+            if (btn) {
+              playOption(currentOption, btn, { keepTrackControls: true });
+            }
+          });
+        }
+      });
 
       function clearTracks() {
         [...playerElement.querySelectorAll('track')].forEach((track) => track.remove());
@@ -324,9 +670,6 @@
           cachedAudioTracks = audio;
           
           const duration = data.duration || 0;
-          if (duration > 0) {
-            setOverrideDuration(duration);
-          }
           
           if (!audio.length) {
             audioSelect.innerHTML = '<option value="0">Audio original</option>';
@@ -370,10 +713,19 @@
         currentOption = option;
         currentFileIdx = option.fileIdx ?? 0;
         
+        if (!settings.keepTrackControls) {
+          showLoadingOverlay('Conectando a los peers...', 'Iniciando reproducción...', true);
+          pollTorrentStats(option);
+        } else {
+          showLoadingOverlay('Cargando pista de audio...', 'Preparando stream con nuevo idioma.', false);
+          pollTorrentStats(option);
+        }
+
         const prevDuration = customDuration;
         if (!settings.keepTrackControls) {
           selectedAudioTrack = 0;
           setOverrideDuration(0);
+          currentStartTime = 0;
         } else {
           setOverrideDuration(prevDuration);
         }
@@ -482,9 +834,10 @@
         const options = (data.options || []).filter((option) => option.infoHash).slice(0, 5);
         setStatus(`Opciones listas: ${options.length}. Prioridad visual: español latino, español, inglés.`);
 
-        for (const option of options) {
+        options.forEach((option, index) => {
           const button = document.createElement('button');
           button.className = 'option';
+          button.style.animationDelay = `${index * 0.05}s`;
           button.type = 'button';
           button.innerHTML = `
             <strong>${option.quality} · ${option.server}</strong>
@@ -493,7 +846,7 @@
           `;
           button.addEventListener('click', () => playOption(option, button));
           optionsEl.appendChild(button);
-        }
+        });
       }
 
       document.getElementById('resolveButton').addEventListener('click', resolveSources);
@@ -508,100 +861,136 @@
         const container = playerInstance.elements.container;
         if (!container) return;
 
-        const homeMenu = container.querySelector('.plyr__menu__container__inner [id$="-home"] [role="menu"]');
-        const innerContainer = container.querySelector('.plyr__menu__container__inner');
-        if (!homeMenu || !innerContainer) return;
+        const tryInject = () => {
+          const homeMenu = container.querySelector('.plyr__menu__container__inner [id$="-home"] [role="menu"]');
+          const innerContainer = container.querySelector('.plyr__menu__container__inner');
+          if (!homeMenu || !innerContainer) return false;
 
-        const existingBtn = homeMenu.querySelector('[target-panel="audio"]');
-        if (existingBtn) existingBtn.remove();
-        const existingPanel = innerContainer.querySelector('#plyr-settings-audio-panel');
-        if (existingPanel) existingPanel.remove();
+          const existingBtn = homeMenu.querySelector('[target-panel="audio"]');
+          if (existingBtn) existingBtn.remove();
+          const existingPanel = innerContainer.querySelector('#plyr-settings-audio-panel');
+          if (existingPanel) existingPanel.remove();
 
-        if (!audioTracks || audioTracks.length < 2) {
-          return;
-        }
+          if (!audioTracks || audioTracks.length < 2) {
+            return true;
+          }
 
-        const audioBtn = document.createElement('button');
-        audioBtn.type = 'button';
-        audioBtn.className = 'plyr__control plyr__control--forward';
-        audioBtn.setAttribute('role', 'menuitem');
-        audioBtn.setAttribute('aria-haspopup', 'true');
-        audioBtn.setAttribute('target-panel', 'audio');
-        
-        const currentTrack = audioTracks.find(t => t.index === currentSelectedIdx) || audioTracks[0];
-        const currentLabel = currentTrack ? (currentTrack.language || currentTrack.label || 'Original') : 'Original';
-        
-        audioBtn.innerHTML = `
-          <span>Audio</span>
-          <span class="plyr__menu__value" id="plyr-audio-value">${currentLabel}</span>
-        `;
-        homeMenu.appendChild(audioBtn);
-
-        const audioPanel = document.createElement('div');
-        audioPanel.id = 'plyr-settings-audio-panel';
-        const speedPanel = innerContainer.querySelector('[id$="-speed"]');
-        audioPanel.className = speedPanel ? speedPanel.className : 'plyr__menu__panel';
-        audioPanel.setAttribute('hidden', '');
-
-        const backBtn = document.createElement('button');
-        backBtn.type = 'button';
-        backBtn.className = 'plyr__control plyr__control--back';
-        backBtn.setAttribute('target-panel', 'home');
-        backBtn.innerHTML = `
-          <span aria-hidden="true">Audio</span>
-        `;
-        audioPanel.appendChild(backBtn);
-
-        const menuList = document.createElement('div');
-        menuList.setAttribute('role', 'menu');
-        
-        audioTracks.forEach((track) => {
-          const trackBtn = document.createElement('button');
-          trackBtn.type = 'button';
-          trackBtn.setAttribute('role', 'menuitemradio');
-          trackBtn.className = 'plyr__control';
-          trackBtn.setAttribute('aria-checked', track.index === currentSelectedIdx ? 'true' : 'false');
-          trackBtn.value = String(track.index);
+          const audioBtn = document.createElement('button');
+          audioBtn.type = 'button';
+          audioBtn.className = 'plyr__control plyr__control--forward';
+          audioBtn.setAttribute('role', 'menuitem');
+          audioBtn.setAttribute('aria-haspopup', 'true');
+          audioBtn.setAttribute('target-panel', 'audio');
           
-          const suffix = [track.language, track.codec].filter(Boolean).join(' · ');
-          const label = suffix ? `${track.label} · ${suffix}` : track.label;
-          trackBtn.innerHTML = `
-            <span>${label}</span>
+          const currentTrack = audioTracks.find(t => t.index === currentSelectedIdx) || audioTracks[0];
+          const currentLabel = currentTrack ? (currentTrack.language || currentTrack.label || 'Original') : 'Original';
+          
+          audioBtn.innerHTML = `
+            <span>Audio</span>
+            <span class="plyr__menu__value" id="plyr-audio-value">${currentLabel}</span>
           `;
+          homeMenu.appendChild(audioBtn);
+
+          const audioPanel = document.createElement('div');
+          audioPanel.id = 'plyr-settings-audio-panel';
+          const speedPanel = innerContainer.querySelector('[id$="-speed"]');
+          audioPanel.className = speedPanel ? speedPanel.className : 'plyr__menu__panel';
+          audioPanel.setAttribute('hidden', '');
+
+          const backBtn = document.createElement('button');
+          backBtn.type = 'button';
+          backBtn.className = 'plyr__control plyr__control--back';
+          backBtn.setAttribute('target-panel', 'home');
           
-          trackBtn.addEventListener('click', () => {
-            menuList.querySelectorAll('[role="menuitemradio"]').forEach(btn => {
-              btn.setAttribute('aria-checked', 'false');
+          const nativeBackBtn = speedPanel ? speedPanel.querySelector('.plyr__control--back') : null;
+          if (nativeBackBtn) {
+            backBtn.innerHTML = nativeBackBtn.innerHTML;
+          } else {
+            backBtn.innerHTML = '<span aria-hidden="true">Audio</span>';
+          }
+          audioPanel.appendChild(backBtn);
+
+          const menuList = document.createElement('div');
+          menuList.setAttribute('role', 'menu');
+          
+          audioTracks.forEach((track) => {
+            const trackBtn = document.createElement('button');
+            trackBtn.type = 'button';
+            trackBtn.setAttribute('role', 'menuitemradio');
+            trackBtn.className = 'plyr__control';
+            trackBtn.setAttribute('aria-checked', track.index === currentSelectedIdx ? 'true' : 'false');
+            trackBtn.value = String(track.index);
+            
+            const suffix = [track.language, track.codec].filter(Boolean).join(' · ');
+            const label = suffix ? `${track.label} · ${suffix}` : track.label;
+            trackBtn.innerHTML = `
+              <span>${label}</span>
+            `;
+            
+            trackBtn.addEventListener('click', () => {
+              menuList.querySelectorAll('[role="menuitemradio"]').forEach(btn => {
+                btn.setAttribute('aria-checked', 'false');
+              });
+              trackBtn.setAttribute('aria-checked', 'true');
+              
+              const valSpan = audioBtn.querySelector('#plyr-audio-value');
+              if (valSpan) valSpan.textContent = track.language || track.label || 'Original';
+              
+              audioPanel.setAttribute('hidden', '');
+              const homePanel = innerContainer.querySelector('[id$="-home"]');
+              if (homePanel) homePanel.removeAttribute('hidden');
+              
+              onTrackChange(track.index);
             });
-            trackBtn.setAttribute('aria-checked', 'true');
             
-            const valSpan = audioBtn.querySelector('#plyr-audio-value');
-            if (valSpan) valSpan.textContent = track.language || track.label || 'Original';
-            
+            menuList.appendChild(trackBtn);
+          });
+          
+          audioPanel.appendChild(menuList);
+          innerContainer.appendChild(audioPanel);
+
+          audioBtn.addEventListener('click', () => {
+            const homePanel = innerContainer.querySelector('[id$="-home"]');
+            if (homePanel) homePanel.setAttribute('hidden', '');
+            audioPanel.removeAttribute('hidden');
+          });
+
+          backBtn.addEventListener('click', () => {
             audioPanel.setAttribute('hidden', '');
             const homePanel = innerContainer.querySelector('[id$="-home"]');
             if (homePanel) homePanel.removeAttribute('hidden');
-            
-            onTrackChange(track.index);
           });
-          
-          menuList.appendChild(trackBtn);
-        });
-        
-        audioPanel.appendChild(menuList);
-        innerContainer.appendChild(audioPanel);
 
-        audioBtn.addEventListener('click', () => {
-          const homePanel = innerContainer.querySelector('[id$="-home"]');
-          if (homePanel) homePanel.setAttribute('hidden', '');
-          audioPanel.removeAttribute('hidden');
-        });
+          const settingsToggle = container.querySelector('[data-plyr="settings"]');
+          if (settingsToggle) {
+            const observer = new MutationObserver(() => {
+              const isExpanded = settingsToggle.getAttribute('aria-expanded') === 'true';
+              if (!isExpanded) {
+                audioPanel.setAttribute('hidden', '');
+                const homePanel = innerContainer.querySelector('[id$="-home"]');
+                if (homePanel) homePanel.removeAttribute('hidden');
+              }
+            });
+            observer.observe(settingsToggle, { attributes: true, attributeFilter: ['aria-expanded'] });
+            
+            if (audioPanel._observer) {
+              audioPanel._observer.disconnect();
+            }
+            audioPanel._observer = observer;
+          }
 
-        backBtn.addEventListener('click', () => {
-          audioPanel.setAttribute('hidden', '');
-          const homePanel = innerContainer.querySelector('[id$="-home"]');
-          if (homePanel) homePanel.removeAttribute('hidden');
-        });
+          return true;
+        };
+
+        if (!tryInject()) {
+          let attempts = 0;
+          const interval = setInterval(() => {
+            attempts += 1;
+            if (tryInject() || attempts > 12) {
+              clearInterval(interval);
+            }
+          }, 50);
+        }
       }
     </script>
   </body>

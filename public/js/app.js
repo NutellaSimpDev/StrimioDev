@@ -39,6 +39,8 @@ const els = {
   loadingTitle: document.getElementById('loadingTitle'),
   loadingDetail: document.getElementById('loadingDetail'),
   loadingProgress: document.getElementById('loadingProgress'),
+  loadingPercent: document.getElementById('loadingPercent'),
+  loadingRing: document.getElementById('loadingRing'),
   get video() {
     return player?.media || document.getElementById('modalVideo');
   },
@@ -60,6 +62,8 @@ const els = {
 };
 
 let customDuration = 0;
+let currentStartTime = 0;
+
 const originalDurationDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
 Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
   get() {
@@ -67,6 +71,34 @@ Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
       return customDuration;
     }
     return originalDurationDescriptor.get.call(this);
+  },
+  configurable: true
+});
+
+const originalCurrentTimeDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+  get() {
+    if (currentStartTime > 0 && (this === els.video || this.id === 'modalVideo' || this.id === 'player')) {
+      return currentStartTime + originalCurrentTimeDescriptor.get.call(this);
+    }
+    return originalCurrentTimeDescriptor.get.call(this);
+  },
+  set(val) {
+    const isTranscoded = activePlaybackOption?.infoHash && shouldTranscode(activePlaybackOption);
+    if (isTranscoded && currentStartTime > 0 && val === 0) {
+      originalCurrentTimeDescriptor.set.call(this, 0);
+      return;
+    }
+    if (isTranscoded) {
+      const currentDisplayTime = currentStartTime + originalCurrentTimeDescriptor.get.call(this);
+      if (Math.abs(val - currentDisplayTime) > 1.5) {
+        currentStartTime = val;
+        scheduleStreamSeek(val);
+        originalCurrentTimeDescriptor.set.call(this, 0);
+        return;
+      }
+    }
+    originalCurrentTimeDescriptor.set.call(this, val);
   },
   configurable: true
 });
@@ -79,20 +111,22 @@ function setOverrideDuration(duration) {
 
 player = new Plyr(els.video, {
   captions: { active: true, language: 'es', update: true },
-  controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'fullscreen']
+  controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'captions', 'settings', 'fullscreen']
 });
 
 let searchTimer = null;
 let activeMovie = null;
 let statsTimer = null;
+let statsPollGeneration = 0;
 let hls = null;
 let activePlaybackOption = null;
-let lastTorrentProgress = 0;
 let lastObservedTime = 0;
 let selectedAudioTrack = 0;
 let cachedCompiledTracks = [];
 let cachedAudioTracks = [];
 let trackSwapTimeRestorationListener = null;
+let seekDebounceTimer = null;
+let pendingSeekTime = null;
 
 function setStatus(section, message) {
   els.status[section].textContent = message;
@@ -108,7 +142,7 @@ function escapeHtml(value) {
 
 function movieCard(movie, compact = false) {
   const button = document.createElement('button');
-  button.className = `${compact ? 'w-full' : 'w-40 sm:w-48'} group snap-start shrink-0 text-left transition-all duration-300 hover:scale-105`;
+  button.className = `${compact ? 'w-full' : 'w-32 sm:w-48'} group snap-start shrink-0 text-left transition-all duration-300 hover:scale-105`;
   button.type = 'button';
   button.title = movie.title;
   button.innerHTML = `
@@ -197,13 +231,150 @@ function playbackCompatibility(option) {
   return { ...audio, isMkv, score };
 }
 
-function streamUrlForOption(option, audioTrack = selectedAudioTrack) {
+function isLikelyHdrOption(option) {
+  return /\b(HDR10\+?|HDR|DV|DOVI|Dolby\s*Vision|HLG|PQ|BT\.?2020|Rec\.?2020)\b/i.test(option?.title || '');
+}
+
+function shouldUseHdrDirect(option) {
+  const text = `${option?.title || ''} ${option?.url || ''}`;
+  return Boolean(option?.infoHash && isLikelyHdrOption(option) && !/\.mkv\b/i.test(text));
+}
+
+function playbackMimeForOption(option) {
+  const text = `${option?.title || ''} ${option?.url || ''}`;
+  if (/\.webm\b/i.test(text)) return 'video/webm';
+  if (/\.mkv\b/i.test(text)) return 'video/x-matroska';
+  return 'video/mp4';
+}
+
+function streamUrlForOption(option, audioTrack = selectedAudioTrack, startTime = 0) {
   const params = new URLSearchParams({ fileIdx: String(option.fileIdx ?? 0) });
   if (option.infoHash) {
-    params.set('audioIdx', String(audioTrack));
-    return `/api/stream/${option.infoHash}?${params}`;
+    if (shouldUseHdrDirect(option)) {
+      return `/api/stream/${option.infoHash}?${params}`;
+    }
+    params.set('audioTrack', String(audioTrack));
+    if (startTime > 0) {
+      params.set('startTime', String(startTime));
+    }
+    return `/api/transcode/${option.infoHash}?${params}`;
   }
   return `/api/stream/${option.infoHash || option.url}?${params}`;
+}
+
+function formatClock(totalSeconds = 0) {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = safe % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  return `${minutes}:${String(seconds).padStart(2, '0')}`;
+}
+
+function setLoadingPercent(percent) {
+  const safe = Math.max(0, Math.min(100, Number(percent) || 0));
+  if (els.loadingPercent) els.loadingPercent.textContent = `${Math.round(safe)}%`;
+  if (els.loadingRing) els.loadingRing.style.setProperty('--loading-deg', `${Math.max(14, safe * 3.6)}deg`);
+  if (els.loadingProgress) els.loadingProgress.style.width = `${safe}%`;
+}
+
+function bufferedAheadSeconds() {
+  const video = els.video;
+  if (!video?.buffered?.length) return 0;
+
+  const current = originalCurrentTimeDescriptor.get.call(video) || 0;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    if (start <= current + 0.25 && end >= current) {
+      return Math.max(0, end - current);
+    }
+  }
+
+  return 0;
+}
+
+function playbackBufferPercent() {
+  const targetSeconds = 20;
+  return Math.min(100, (bufferedAheadSeconds() / targetSeconds) * 100);
+}
+
+function scheduleStreamSeek(time) {
+  if (!activePlaybackOption) return;
+  pendingSeekTime = Math.max(0, Math.min(customDuration || time, time));
+  clearTimeout(seekDebounceTimer);
+  seekDebounceTimer = setTimeout(() => {
+    const target = pendingSeekTime;
+    pendingSeekTime = null;
+    reloadStreamAtTime(target);
+  }, 160);
+}
+
+function subtitleUrlForPlayback(src, startTime = currentStartTime) {
+  if (!src || startTime <= 0 || !shouldTranscode(activePlaybackOption)) return src;
+  try {
+    const url = new URL(src, window.location.origin);
+    if (url.origin === window.location.origin) {
+      url.searchParams.set('offset', String(startTime));
+      return `${url.pathname}${url.search}`;
+    }
+  } catch {
+    // Keep original source if it is not a normal URL.
+  }
+  return src;
+}
+
+function applyTrackSourcesForCurrentStart() {
+  if (!cachedCompiledTracks.length) return;
+  clearTracks();
+  cachedCompiledTracks.forEach((track, index) => {
+    const trackEl = document.createElement('track');
+    trackEl.kind = track.kind;
+    trackEl.label = track.label;
+    trackEl.srclang = track.srclang;
+    trackEl.dataset.baseSrc = track.src;
+    trackEl.src = subtitleUrlForPlayback(track.src);
+    if (index === 0) trackEl.default = true;
+    els.video.appendChild(trackEl);
+  });
+}
+
+function reloadStreamAtTime(time) {
+  if (!activePlaybackOption) return;
+  
+  if (trackSwapTimeRestorationListener) {
+    els.video.removeEventListener('loadedmetadata', trackSwapTimeRestorationListener);
+    trackSwapTimeRestorationListener = null;
+  }
+  
+  els.modalStatus.textContent = `Saltando a ${formatClock(time)}...`;
+  
+  player.source = {
+    type: 'video',
+    title: activePlaybackOption.title,
+    sources: [
+      {
+        src: streamUrlForOption(activePlaybackOption, selectedAudioTrack, time),
+        type: playbackMimeForOption(activePlaybackOption)
+      }
+    ],
+    tracks: cachedCompiledTracks.map((track) => ({
+      ...track,
+      src: subtitleUrlForPlayback(track.src, time)
+    }))
+  };
+  applyTrackSourcesForCurrentStart();
+
+  setTimeout(() => {
+    setupPlyrAudioMenu(player, cachedAudioTracks, selectedAudioTrack, (trackIdx) => {
+      selectedAudioTrack = trackIdx;
+      els.audioSelect.value = String(trackIdx);
+      els.audioStatus.textContent = `Cambiando a pista de audio ${trackIdx}...`;
+      playOption(activePlaybackOption, document.querySelector('[data-quality-card].border-red-500') || document.body, { keepTrackControls: true, audioTrack: trackIdx });
+    });
+  }, 200);
+
+  player.play().catch(() => {});
 }
 
 function pickAutoplayIndex(options) {
@@ -260,13 +431,34 @@ function resetTrackControls() {
 }
 
 function shouldTranscode(option) {
-  return Boolean(option?.infoHash);
+  return Boolean(option?.infoHash && !shouldUseHdrDirect(option));
+}
+
+function syncPlyrCaptionState(selectedIndex) {
+  if (!player) return;
+  try {
+    if (selectedIndex < 0) {
+      player.toggleCaptions(false);
+      return;
+    }
+    player.currentTrack = selectedIndex;
+    player.toggleCaptions(true);
+  } catch {
+    // Native textTracks still control captions if Plyr refuses the assignment.
+  }
 }
 
 function setSubtitleMode(selectedIndex) {
   const tracks = els.video.textTracks || [];
   for (let index = 0; index < tracks.length; index += 1) {
-    tracks[index].mode = String(index) === String(selectedIndex) ? 'showing' : 'disabled';
+    tracks[index].mode = index === selectedIndex ? 'showing' : 'disabled';
+  }
+  syncPlyrCaptionState(selectedIndex);
+  if (selectedIndex < 0) {
+    els.subtitleStatus.textContent = 'Subtítulos desactivados.';
+  } else {
+    const label = cachedCompiledTracks[selectedIndex]?.label || els.subtitleSelect.selectedOptions[0]?.textContent || 'subtítulo seleccionado';
+    els.subtitleStatus.textContent = `Subtítulos: ${label}.`;
   }
 }
 
@@ -342,16 +534,14 @@ function showLoadingOverlay(message = 'Conectando a los peers...', detail = 'Pre
   els.loadingTitle.textContent = message;
   els.loadingDetail.textContent = detail;
   if (resetProgress) {
-    lastTorrentProgress = 0;
-    els.loadingProgress.style.width = '0%';
+    setLoadingPercent(0);
   }
-  els.loadingOverlay.classList.remove('hidden');
-  els.loadingOverlay.classList.add('grid');
+  els.loadingOverlay.classList.add('visible');
 }
 
 function hideLoadingOverlay() {
-  els.loadingOverlay.classList.add('hidden');
-  els.loadingOverlay.classList.remove('grid');
+  statsPollGeneration += 1;
+  els.loadingOverlay.classList.remove('visible');
   if (statsTimer) {
     clearInterval(statsTimer);
     statsTimer = null;
@@ -359,6 +549,9 @@ function hideLoadingOverlay() {
 }
 
 function maybeHideOverlayForPlayback() {
+  if (els.loadingOverlay.classList.contains('visible')) {
+    setLoadingPercent(playbackBufferPercent());
+  }
   const advanced = els.video.currentTime > 0 && els.video.currentTime !== lastObservedTime;
   lastObservedTime = els.video.currentTime;
   if (els.video.readyState >= 3 || (!els.video.paused && (els.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA || advanced))) {
@@ -368,24 +561,31 @@ function maybeHideOverlayForPlayback() {
 
 async function pollTorrentStats(option) {
   if (statsTimer) clearInterval(statsTimer);
+  const pollGeneration = ++statsPollGeneration;
 
   const update = async () => {
+    if (pollGeneration !== statsPollGeneration || activePlaybackOption !== option) return;
     try {
       const params = new URLSearchParams({ fileIdx: String(option.fileIdx ?? 0) });
       const response = await fetch(`/api/stream/stats/${option.infoHash}?${params}`);
       const stats = await response.json();
+      if (pollGeneration !== statsPollGeneration || activePlaybackOption !== option) return;
       if (!response.ok) throw new Error(stats.error || 'No se pudieron leer estadisticas.');
 
-      lastTorrentProgress = Math.max(lastTorrentProgress, Math.min(100, stats.progress || 0));
-      els.loadingProgress.style.width = `${lastTorrentProgress}%`;
+      const bufferAhead = bufferedAheadSeconds();
+      const bufferPercent = playbackBufferPercent();
+      setLoadingPercent(bufferPercent);
+      const fileLabel = stats.file
+        ? `Archivo: ${stats.file.progress}% (${stats.file.downloadedSize}/${stats.file.size})`
+        : `Torrent: ${stats.progress}%`;
       if (!stats.numPeers) {
         els.loadingTitle.textContent = 'Conectando a los peers...';
-        els.loadingDetail.textContent = `Buffering: ${stats.progress}% - ${stats.downloadSpeed} - sin peers conectados`;
+        els.loadingDetail.textContent = `${fileLabel} · Buffer local: ${bufferAhead.toFixed(1)}s · ${stats.downloadSpeed} · sin peers`;
         return;
       }
 
       els.loadingTitle.textContent = 'Buffering inicial...';
-      els.loadingDetail.textContent = `Buffering: ${stats.progress}% - Descargando a ${stats.downloadSpeed} - ${stats.numPeers} peers conectados - ETA ${stats.timeRemaining}`;
+      els.loadingDetail.textContent = `${fileLabel} · Buffer local: ${bufferAhead.toFixed(1)}s · ${stats.downloadSpeed} · ${stats.numPeers} peers`;
     } catch (error) {
       els.loadingTitle.textContent = 'Esperando datos del torrent...';
       els.loadingDetail.textContent = error.message;
@@ -396,8 +596,14 @@ async function pollTorrentStats(option) {
   statsTimer = setInterval(update, 1000);
 }
 
+function stopTorrentForOption(option) {
+  if (!option?.infoHash) return;
+  fetch(`/api/stream/stop/${encodeURIComponent(option.infoHash)}`, { method: 'POST' }).catch(() => {});
+}
+
 async function playOption(option, card, settings = {}) {
   const currentTime = els.video.currentTime || 0;
+  const previousPlaybackOption = activePlaybackOption;
   
   document.querySelectorAll('[data-quality-card]').forEach((node) => {
     node.classList.remove('border-red-500', 'bg-red-500/10');
@@ -405,6 +611,9 @@ async function playOption(option, card, settings = {}) {
   card.classList.add('border-red-500', 'bg-red-500/10');
   
   destroyHls();
+  if (!settings.keepTrackControls && previousPlaybackOption?.infoHash && previousPlaybackOption.infoHash !== option.infoHash) {
+    stopTorrentForOption(previousPlaybackOption);
+  }
   
   activePlaybackOption = option;
   lastObservedTime = 0;
@@ -419,31 +628,26 @@ async function playOption(option, card, settings = {}) {
     if (prevDuration > 0) {
       setOverrideDuration(prevDuration);
     }
+    currentStartTime = currentTime > 0 ? currentTime : currentStartTime;
     
     player.source = {
       type: 'video',
       title: option.title,
       sources: [
         {
-          src: streamUrlForOption(option, selectedAudioTrack),
-          type: 'video/mp4'
+          src: streamUrlForOption(option, selectedAudioTrack, currentStartTime),
+          type: playbackMimeForOption(option)
         }
       ],
-      tracks: cachedCompiledTracks
+      tracks: cachedCompiledTracks.map((track) => ({
+        ...track,
+        src: subtitleUrlForPlayback(track.src, currentStartTime)
+      }))
     };
 
     if (trackSwapTimeRestorationListener) {
       els.video.removeEventListener('loadedmetadata', trackSwapTimeRestorationListener);
-    }
-
-    if (currentTime > 0) {
-      trackSwapTimeRestorationListener = () => {
-        els.video.currentTime = currentTime;
-        player.play().catch(() => {});
-        els.video.removeEventListener('loadedmetadata', trackSwapTimeRestorationListener);
-        trackSwapTimeRestorationListener = null;
-      };
-      els.video.addEventListener('loadedmetadata', trackSwapTimeRestorationListener);
+      trackSwapTimeRestorationListener = null;
     }
 
     // Defer setupPlyrAudioMenu to allow Plyr DOM reconstruction to finish
@@ -467,20 +671,36 @@ async function playOption(option, card, settings = {}) {
   resetVideoElement();
   resetTrackControls();
   selectedAudioTrack = 0;
+  currentStartTime = 0;
   cachedCompiledTracks = [];
   cachedAudioTracks = [];
   
   showLoadingOverlay('Conectando a los peers...', 'Iniciando reproducción...', true);
   els.modalStatus.textContent = 'Iniciando stream de video y analizando pistas en segundo plano...';
 
-  // 1. Set player source immediately with default audio track (0)
+  const tracksPromise = fetch(`/api/stream/tracks/${option.infoHash}?${new URLSearchParams({ fileIdx: String(option.fileIdx ?? 0) })}`)
+    .then((r) => r.ok ? r.json() : { audio: [], subtitles: [] })
+    .catch(() => ({ audio: [], subtitles: [] }));
+
+  const initialTracksData = isLikelyHdrOption(option)
+    ? await Promise.race([
+        tracksPromise,
+        new Promise((resolve) => setTimeout(() => resolve(null), 8000))
+      ])
+    : null;
+
+  if (initialTracksData?.duration > 0) {
+    setOverrideDuration(initialTracksData.duration);
+  }
+
+  // 1. Set player source with default audio track (0)
   player.source = {
     type: 'video',
     title: option.title,
     sources: [
       {
         src: streamUrlForOption(option, 0),
-        type: 'video/mp4'
+        type: playbackMimeForOption(option)
       }
     ]
   };
@@ -495,10 +715,6 @@ async function playOption(option, card, settings = {}) {
   });
 
   // 2. Fetch tracks and subtitles in parallel in the background
-  const tracksPromise = fetch(`/api/stream/tracks/${option.infoHash}?${new URLSearchParams({ fileIdx: String(option.fileIdx ?? 0) })}`)
-    .then((r) => r.ok ? r.json() : { audio: [], subtitles: [] })
-    .catch(() => ({ audio: [], subtitles: [] }));
-
   const subsPromise = activeMovie
     ? fetch(`/api/subtitles/batch?${new URLSearchParams({
         id: activeMovie.imdbId,
@@ -514,7 +730,7 @@ async function playOption(option, card, settings = {}) {
         .catch(() => ({ subtitles: [] }))
     : Promise.resolve({ subtitles: [] });
 
-  Promise.all([tracksPromise, subsPromise]).then(([tracksData, subsData]) => {
+  Promise.all([initialTracksData ? Promise.resolve(initialTracksData) : tracksPromise, subsPromise]).then(([tracksData, subsData]) => {
     // Check if user has switched to another video in the meantime
     if (activePlaybackOption !== option) return;
 
@@ -534,7 +750,7 @@ async function playOption(option, card, settings = {}) {
         const label = suffix ? `${track.label} · ${suffix}` : track.label;
         return `<option value="${track.index}">${escapeHtml(label)}</option>`;
       }).join('');
-      els.audioSelect.disabled = audio.length < 2;
+      els.audioSelect.disabled = shouldUseHdrDirect(option) || audio.length < 2;
     } else {
       els.audioSelect.innerHTML = '<option value="0">Audio original</option>';
       els.audioSelect.disabled = true;
@@ -548,6 +764,7 @@ async function playOption(option, card, settings = {}) {
 
     // Sync legacy select change handler
     els.audioSelect.onchange = () => {
+      if (shouldUseHdrDirect(option)) return;
       selectedAudioTrack = Number(els.audioSelect.value);
       els.audioStatus.textContent = `Cambiando a ${els.audioSelect.selectedOptions[0]?.textContent || 'otra pista'}...`;
       playOption(option, card, { keepTrackControls: true, audioTrack: selectedAudioTrack });
@@ -596,20 +813,25 @@ async function playOption(option, card, settings = {}) {
         trackEl.kind = track.kind;
         trackEl.label = track.label;
         trackEl.srclang = track.srclang;
-        trackEl.src = track.src;
+        trackEl.dataset.baseSrc = track.src;
+        trackEl.src = subtitleUrlForPlayback(track.src);
         if (idx === 0) trackEl.default = true;
         els.video.appendChild(trackEl);
       });
 
       // Auto-select first subtitle
       els.subtitleSelect.value = '0';
-      setSubtitleMode(0);
+      setTimeout(() => setSubtitleMode(0), 100);
     } else {
       els.subtitleStatus.textContent = 'No se encontraron subtítulos externos ni internos compatibles.';
     }
 
     // Setup Plyr custom audio menu
-    setupPlyrAudioMenu(player, audio, preferredIdx, (trackIdx) => {
+    if (shouldUseHdrDirect(option)) {
+      els.audioStatus.textContent = 'HDR directo activo: el navegador usa el audio original del contenedor.';
+    }
+
+    setupPlyrAudioMenu(player, shouldUseHdrDirect(option) ? [] : audio, preferredIdx, (trackIdx) => {
       selectedAudioTrack = trackIdx;
       els.audioSelect.value = String(trackIdx);
       els.audioStatus.textContent = `Cambiando a pista de audio ${trackIdx}...`;
@@ -617,12 +839,14 @@ async function playOption(option, card, settings = {}) {
     });
 
     // C. Check if we need to auto-switch to preferred audio track
-    if (preferredIdx !== 0) {
+    if (preferredIdx !== 0 && !shouldUseHdrDirect(option)) {
       selectedAudioTrack = preferredIdx;
       els.audioStatus.textContent = `Cambiando automáticamente a pista de audio preferida (${preferredIdx})...`;
       playOption(option, card, { keepTrackControls: true, audioTrack: preferredIdx });
     } else {
-      els.modalStatus.textContent = `${option.quality} cargado. Remux/transcode de audio activo.`;
+      els.modalStatus.textContent = shouldUseHdrDirect(option)
+        ? `${option.quality} HDR cargado en modo directo.`
+        : `${option.quality} cargado. Remux/transcode de audio activo.`;
     }
   }).catch((error) => {
     if (activePlaybackOption !== option) return;
@@ -632,12 +856,16 @@ async function playOption(option, card, settings = {}) {
 }
 
 async function playAnimeOption(option, card) {
+  const previousPlaybackOption = activePlaybackOption;
   document.querySelectorAll('[data-quality-card]').forEach((node) => {
     node.classList.remove('border-red-500', 'bg-red-500/10');
   });
   card.classList.add('border-red-500', 'bg-red-500/10');
   hideLoadingOverlay();
   destroyHls();
+  if (previousPlaybackOption?.infoHash) {
+    stopTorrentForOption(previousPlaybackOption);
+  }
   resetVideoElement();
   resetTrackControls();
   activePlaybackOption = option;
@@ -685,15 +913,15 @@ function renderQualities(options) {
     const card = document.createElement('button');
     card.type = 'button';
     card.dataset.qualityCard = 'true';
-    card.className = 'w-full min-w-0 overflow-hidden rounded-lg border border-white/10 bg-white/5 p-4 text-left transition hover:border-red-500/70 hover:bg-white/10';
+    card.className = 'w-full min-w-0 overflow-hidden rounded-lg border border-white/10 bg-white/5 p-3 text-left transition hover:border-red-500/70 hover:bg-white/10 sm:p-4';
     card.innerHTML = `
-      <div class="mb-3 flex min-w-0 flex-wrap items-center gap-2">
+      <div class="mb-2 flex min-w-0 flex-wrap items-center gap-1.5 sm:mb-3 sm:gap-2">
         <span class="shrink-0 rounded bg-red-600 px-2 py-1 text-xs font-black text-white">${escapeHtml(option.quality)}</span>
         <span class="shrink-0 rounded bg-white/10 px-2 py-1 text-xs font-black text-zinc-200">${escapeHtml(parseSize(option.title))}</span>
         <span class="shrink-0 rounded bg-emerald-500/15 px-2 py-1 text-xs font-black text-emerald-300">👤 ${escapeHtml(parseSeeds(option.title))}</span>
         <span class="shrink-0 rounded px-2 py-1 text-xs font-black ${compatibility.compatible === false ? 'bg-amber-500/15 text-amber-300' : 'bg-sky-500/15 text-sky-300'}">${escapeHtml(compatibility.label)}</span>
       </div>
-      <strong class="line-clamp-2 block min-w-0 text-sm font-black leading-5 text-white">${escapeHtml(cleanTitle(option.title))}</strong>
+      <strong class="line-clamp-2 block min-w-0 text-xs font-black leading-5 text-white sm:text-sm">${escapeHtml(cleanTitle(option.title))}</strong>
       <span class="mt-2 block min-w-0 truncate text-xs font-bold text-zinc-500">${escapeHtml(parseTracker(option.title))} · fileIdx ${option.fileIdx ?? 0}</span>
       <span class="mt-1 block min-w-0 truncate font-mono text-[11px] text-zinc-600">${escapeHtml(option.infoHash || option.url || option.providerId)}</span>
     `;
@@ -836,11 +1064,13 @@ function openAnimeSelector(anime) {
 }
 
 function closeModal() {
+  const previousPlaybackOption = activePlaybackOption;
   player.stop();
   destroyHls();
   hideLoadingOverlay();
+  stopTorrentForOption(previousPlaybackOption);
   activePlaybackOption = null;
-  lastTorrentProgress = 0;
+  currentStartTime = 0;
   clearTracks();
   resetTrackControls();
   els.modal.classList.add('hidden');
@@ -896,7 +1126,7 @@ function setupCarouselButtons() {
 }
 
 player.on('canplay', () => {
-  if (!els.loadingOverlay.classList.contains('hidden')) {
+  if (els.loadingOverlay.classList.contains('visible')) {
     els.loadingTitle.textContent = 'Buffer listo';
     els.loadingDetail.textContent = 'Esperando reproducción estable...';
   }
@@ -924,6 +1154,14 @@ player.on('stalled', () => {
 });
 player.on('ready', () => {
   refreshAudioTracks();
+  if (cachedAudioTracks && cachedAudioTracks.length > 1 && activePlaybackOption) {
+    setupPlyrAudioMenu(player, cachedAudioTracks, selectedAudioTrack, (trackIdx) => {
+      selectedAudioTrack = trackIdx;
+      els.audioSelect.value = String(trackIdx);
+      els.audioStatus.textContent = `Cambiando a pista de audio ${trackIdx}...`;
+      playOption(activePlaybackOption, document.querySelector('[data-quality-card].border-red-500') || document.body, { keepTrackControls: true, audioTrack: trackIdx });
+    });
+  }
   const video = els.video;
   if (video && video.textTracks) {
     video.textTracks.addEventListener('change', () => {
@@ -962,17 +1200,6 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && !els.episodeModal.classList.contains('hidden')) els.episodeModal.classList.add('hidden');
 });
 
-els.subtitleSelect.addEventListener('change', () => {
-  const val = els.subtitleSelect.value;
-  if (val === 'off') {
-    setSubtitleMode(-1);
-  } else {
-    setSubtitleMode(Number(val));
-  }
-});
-
-
-
 setupCarouselButtons();
 loadCatalog();
 
@@ -980,98 +1207,116 @@ function setupPlyrAudioMenu(playerInstance, audioTracks, currentSelectedIdx, onT
   const container = playerInstance.elements.container;
   if (!container) return;
 
-  const homeMenu = container.querySelector('.plyr__menu__container__inner [id$="-home"] [role="menu"]');
-  const innerContainer = container.querySelector('.plyr__menu__container__inner');
-  if (!homeMenu || !innerContainer) return;
+  const tryInject = () => {
+    const homeMenu = container.querySelector('.plyr__menu__container__inner [id$="-home"] [role="menu"]');
+    const innerContainer = container.querySelector('.plyr__menu__container__inner');
+    if (!homeMenu || !innerContainer) return false;
 
-  const existingBtn = homeMenu.querySelector('[target-panel="audio"]');
-  if (existingBtn) existingBtn.remove();
-  const existingPanel = innerContainer.querySelector('#plyr-settings-audio-panel');
-  if (existingPanel) existingPanel.remove();
+    const existingBtn = homeMenu.querySelector('[target-panel="audio"]');
+    if (existingBtn) existingBtn.remove();
+    const existingPanel = innerContainer.querySelector('#plyr-settings-audio-panel');
+    if (existingPanel) existingPanel.remove();
 
-  if (!audioTracks || audioTracks.length < 2) {
-    return;
-  }
+    if (!audioTracks || audioTracks.length < 2) {
+      return true;
+    }
 
-  const audioBtn = document.createElement('button');
-  audioBtn.type = 'button';
-  audioBtn.className = 'plyr__control plyr__control--forward';
-  audioBtn.setAttribute('role', 'menuitem');
-  audioBtn.setAttribute('aria-haspopup', 'true');
-  audioBtn.setAttribute('target-panel', 'audio');
-  
-  const currentTrack = audioTracks.find(t => t.index === currentSelectedIdx) || audioTracks[0];
-  const currentLabel = currentTrack ? (currentTrack.language || currentTrack.label || 'Original') : 'Original';
-  
-  audioBtn.innerHTML = `
-    <span>Audio</span>
-    <span class="plyr__menu__value" id="plyr-audio-value">${escapeHtml(currentLabel)}</span>
-  `;
-  homeMenu.appendChild(audioBtn);
-
-  const audioPanel = document.createElement('div');
-  audioPanel.id = 'plyr-settings-audio-panel';
-  const speedPanel = innerContainer.querySelector('[id$="-speed"]');
-  audioPanel.className = speedPanel ? speedPanel.className : 'plyr__menu__panel';
-  audioPanel.setAttribute('hidden', '');
-
-  const backBtn = document.createElement('button');
-  backBtn.type = 'button';
-  backBtn.className = 'plyr__control plyr__control--back';
-  backBtn.setAttribute('target-panel', 'home');
-  backBtn.innerHTML = `
-    <span aria-hidden="true">Audio</span>
-  `;
-  audioPanel.appendChild(backBtn);
-
-  const menuList = document.createElement('div');
-  menuList.setAttribute('role', 'menu');
-  
-  audioTracks.forEach((track) => {
-    const trackBtn = document.createElement('button');
-    trackBtn.type = 'button';
-    trackBtn.setAttribute('role', 'menuitemradio');
-    trackBtn.className = 'plyr__control';
-    trackBtn.setAttribute('aria-checked', track.index === currentSelectedIdx ? 'true' : 'false');
-    trackBtn.value = String(track.index);
+    const audioBtn = document.createElement('button');
+    audioBtn.type = 'button';
+    audioBtn.className = 'plyr__control plyr__control--forward';
+    audioBtn.setAttribute('role', 'menuitem');
+    audioBtn.setAttribute('aria-haspopup', 'true');
+    audioBtn.setAttribute('target-panel', 'audio');
     
-    const suffix = [track.language, track.codec].filter(Boolean).join(' · ');
-    const label = suffix ? `${track.label} · ${suffix}` : track.label;
-    trackBtn.innerHTML = `
-      <span>${escapeHtml(label)}</span>
+    const currentTrack = audioTracks.find(t => t.index === currentSelectedIdx) || audioTracks[0];
+    const currentLabel = currentTrack ? (currentTrack.language || currentTrack.label || 'Original') : 'Original';
+    
+    audioBtn.innerHTML = `
+      <span>Audio</span>
+      <span class="plyr__menu__value" id="plyr-audio-value">${escapeHtml(currentLabel)}</span>
     `;
+    homeMenu.appendChild(audioBtn);
+
+    const audioPanel = document.createElement('div');
+    audioPanel.id = 'plyr-settings-audio-panel';
+    const speedPanel = innerContainer.querySelector('[id$="-speed"]');
+    audioPanel.className = speedPanel ? speedPanel.className : 'plyr__menu__panel';
+    audioPanel.setAttribute('hidden', '');
+
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'plyr__control plyr__control--back';
+    backBtn.setAttribute('target-panel', 'home');
     
-    trackBtn.addEventListener('click', () => {
-      menuList.querySelectorAll('[role="menuitemradio"]').forEach(btn => {
-        btn.setAttribute('aria-checked', 'false');
+    const nativeBackBtn = speedPanel ? speedPanel.querySelector('.plyr__control--back') : null;
+    if (nativeBackBtn) {
+      backBtn.innerHTML = nativeBackBtn.innerHTML;
+    } else {
+      backBtn.innerHTML = '<span aria-hidden="true">Audio</span>';
+    }
+    audioPanel.appendChild(backBtn);
+
+    const menuList = document.createElement('div');
+    menuList.setAttribute('role', 'menu');
+    
+    audioTracks.forEach((track) => {
+      const trackBtn = document.createElement('button');
+      trackBtn.type = 'button';
+      trackBtn.setAttribute('role', 'menuitemradio');
+      trackBtn.className = 'plyr__control';
+      trackBtn.setAttribute('aria-checked', track.index === currentSelectedIdx ? 'true' : 'false');
+      trackBtn.value = String(track.index);
+      
+      const suffix = [track.language, track.codec].filter(Boolean).join(' · ');
+      const label = suffix ? `${track.label} · ${suffix}` : track.label;
+      trackBtn.innerHTML = `
+        <span>${escapeHtml(label)}</span>
+      `;
+      
+      trackBtn.addEventListener('click', () => {
+        menuList.querySelectorAll('[role="menuitemradio"]').forEach(btn => {
+          btn.setAttribute('aria-checked', 'false');
+        });
+        trackBtn.setAttribute('aria-checked', 'true');
+        
+        const valSpan = audioBtn.querySelector('#plyr-audio-value');
+        if (valSpan) valSpan.textContent = track.language || track.label || 'Original';
+        
+        audioPanel.setAttribute('hidden', '');
+        const homePanel = innerContainer.querySelector('[id$="-home"]');
+        if (homePanel) homePanel.removeAttribute('hidden');
+        
+        onTrackChange(track.index);
       });
-      trackBtn.setAttribute('aria-checked', 'true');
       
-      const valSpan = audioBtn.querySelector('#plyr-audio-value');
-      if (valSpan) valSpan.textContent = track.language || track.label || 'Original';
-      
+      menuList.appendChild(trackBtn);
+    });
+    
+    audioPanel.appendChild(menuList);
+    innerContainer.appendChild(audioPanel);
+
+    audioBtn.addEventListener('click', () => {
+      const homePanel = innerContainer.querySelector('[id$="-home"]');
+      if (homePanel) homePanel.setAttribute('hidden', '');
+      audioPanel.removeAttribute('hidden');
+    });
+
+    backBtn.addEventListener('click', () => {
       audioPanel.setAttribute('hidden', '');
       const homePanel = innerContainer.querySelector('[id$="-home"]');
       if (homePanel) homePanel.removeAttribute('hidden');
-      
-      onTrackChange(track.index);
     });
-    
-    menuList.appendChild(trackBtn);
-  });
-  
-  audioPanel.appendChild(menuList);
-  innerContainer.appendChild(audioPanel);
 
-  audioBtn.addEventListener('click', () => {
-    const homePanel = innerContainer.querySelector('[id$="-home"]');
-    if (homePanel) homePanel.setAttribute('hidden', '');
-    audioPanel.removeAttribute('hidden');
-  });
+    return true;
+  };
 
-  backBtn.addEventListener('click', () => {
-    audioPanel.setAttribute('hidden', '');
-    const homePanel = innerContainer.querySelector('[id$="-home"]');
-    if (homePanel) homePanel.removeAttribute('hidden');
-  });
+  if (!tryInject()) {
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts += 1;
+      if (tryInject() || attempts > 12) {
+        clearInterval(interval);
+      }
+    }, 50);
+  }
 }

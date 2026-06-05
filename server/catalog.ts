@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { fetchStremioCatalogItems, parseAddonList } from './stremioAddons.js';
 
 const router = Router();
 const tmdbBaseUrl = 'https://api.themoviedb.org/3';
@@ -32,7 +33,21 @@ type CatalogItem = {
   vote_average: number;
   release_date: string | null;
   episodeCount?: number | null;
+  source?: string;
 };
+
+function configuredCatalogAddons() {
+  return parseAddonList(process.env.STREMIO_CATALOG_ADDONS || '');
+}
+
+function mergeCatalogItems(primary: CatalogItem[], secondary: CatalogItem[], limit = 80) {
+  const seen = new Set<string>();
+  return [...primary, ...secondary].filter((item) => {
+    if (seen.has(item.imdbId)) return false;
+    seen.add(item.imdbId);
+    return true;
+  }).slice(0, limit);
+}
 
 function getTmdbToken() {
   const token = process.env.TMDB_BEARER_TOKEN;
@@ -176,7 +191,13 @@ async function searchCatalog(query: string) {
 
 router.get('/trending', async (_req, res) => {
   try {
-    res.json(await fetchCatalog('/trending/movie/week'));
+    const tmdb = await fetchCatalog('/trending/movie/week');
+    const stremio = await fetchStremioCatalogItems({
+      addons: configuredCatalogAddons(),
+      type: 'movie',
+      limit: 60
+    });
+    res.json(mergeCatalogItems(tmdb, stremio));
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -184,7 +205,13 @@ router.get('/trending', async (_req, res) => {
 
 router.get('/latest', async (_req, res) => {
   try {
-    res.json(await fetchCatalog('/movie/now_playing'));
+    const tmdb = await fetchCatalog('/movie/now_playing');
+    const stremio = await fetchStremioCatalogItems({
+      addons: configuredCatalogAddons(),
+      type: 'movie',
+      limit: 60
+    });
+    res.json(mergeCatalogItems(tmdb, stremio));
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -192,7 +219,13 @@ router.get('/latest', async (_req, res) => {
 
 router.get('/series', async (_req, res) => {
   try {
-    res.json(await fetchSeriesCatalog());
+    const tmdb = await fetchSeriesCatalog();
+    const stremio = await fetchStremioCatalogItems({
+      addons: configuredCatalogAddons(),
+      type: 'series',
+      limit: 60
+    });
+    res.json(mergeCatalogItems(tmdb, stremio));
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }
@@ -214,7 +247,23 @@ router.get('/search', async (req, res) => {
       return;
     }
 
-    res.json(await searchCatalog(query));
+    const tmdb = await searchCatalog(query);
+    const [movieAddons, seriesAddons] = await Promise.all([
+      fetchStremioCatalogItems({
+        addons: configuredCatalogAddons(),
+        type: 'movie',
+        search: query,
+        limit: 40
+      }),
+      fetchStremioCatalogItems({
+        addons: configuredCatalogAddons(),
+        type: 'series',
+        search: query,
+        limit: 40
+      })
+    ]);
+
+    res.json(mergeCatalogItems(tmdb, [...movieAddons, ...seriesAddons], 80));
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
   }

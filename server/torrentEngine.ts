@@ -1,4 +1,5 @@
-import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -7,7 +8,13 @@ import mime from 'mime-types';
 import WebTorrent from 'webtorrent';
 
 const cacheDir = join(tmpdir(), 'strimio-dev-torrents');
-const client = new WebTorrent({ maxConns: 150 });
+const client = new WebTorrent({
+  maxConns: 200,
+  torrentPort: Number(process.env.TORRENT_PORT || 6881),
+  dhtPort: Number(process.env.DHT_PORT || 6882),
+  dht: true,
+  natUpnp: true
+});
 const activeTorrents = new Map<string, TorrentLike>();
 const probeCache = new Map<string, Promise<any>>();
 const trackers = [
@@ -27,6 +34,10 @@ const torrentDiagnostics = new Map<string, {
   lastNoPeers?: string;
   lastWireAt?: number;
 }>();
+const videoEncoder = process.env.STRIMIO_VIDEO_ENCODER || 'h264_videotoolbox';
+const videoBitrate = process.env.STRIMIO_VIDEO_BITRATE || '8000k';
+const preserveHdr = process.env.STRIMIO_PRESERVE_HDR !== 'false';
+const toneMapHdr = process.env.STRIMIO_TONEMAP_HDR === 'true';
 
 interface TranscodeSession {
   ffmpeg: any;
@@ -45,6 +56,8 @@ type TorrentFileLike = {
   name: string;
   path?: string;
   length: number;
+  downloaded?: number;
+  progress?: number;
   select?: () => void;
   deselect?: () => void;
   createReadStream: (range?: { start?: number; end?: number }) => NodeJS.ReadableStream;
@@ -106,6 +119,10 @@ function pickVideoFile(files: TorrentFileLike[], fileIdx: number) {
   if (!files.length) return null;
 
   return files.reduce((a, b) => a.length > b.length ? a : b);
+}
+
+function localFilePath(file: TorrentFileLike) {
+  return join(cacheDir, file.path || file.name);
 }
 
 function waitForReady(torrent: TorrentLike, timeoutMs = 25000) {
@@ -217,6 +234,13 @@ function formatSpeed(bytesPerSecond = 0) {
   return `${Math.round(bytesPerSecond)} B/s`;
 }
 
+function formatBytes(bytes = 0) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+
 function formatTime(milliseconds = 0) {
   if (!Number.isFinite(milliseconds) || milliseconds <= 0) return 'calculando';
   const seconds = Math.ceil(milliseconds / 1000);
@@ -230,7 +254,103 @@ function formatTime(milliseconds = 0) {
   return `${rest}s`;
 }
 
-export function getTorrentStats(infoHash: string) {
+function isLikelyHdrVideo(fileName = '') {
+  return /\b(HDR10\+?|HDR|DV|DOVI|Dolby\s*Vision|HLG|PQ|BT\.?2020|Rec\.?2020)\b/i.test(fileName);
+}
+
+function shouldPreserveHdr(fileName = '') {
+  return preserveHdr && isLikelyHdrVideo(fileName);
+}
+
+function videoTranscodeArgs(fileName = '') {
+  if (videoEncoder === 'copy' || shouldPreserveHdr(fileName)) {
+    return ['-c:v', 'copy', '-tag:v', 'hvc1'];
+  }
+
+  const args: string[] = [];
+  if (toneMapHdr && isLikelyHdrVideo(fileName)) {
+    args.push(
+      '-vf',
+      process.env.STRIMIO_HDR_FILTER || 'tonemap=tonemap=hable:desat=0:peak=100,format=yuv420p'
+    );
+  }
+
+  if (videoEncoder === 'libx264') {
+    return [
+      ...args,
+      '-c:v', 'libx264',
+      '-preset', process.env.STRIMIO_X264_PRESET || 'veryfast',
+      '-tune', 'zerolatency',
+      '-crf', process.env.STRIMIO_X264_CRF || '23',
+      '-pix_fmt', 'yuv420p'
+    ];
+  }
+
+  return [
+    ...args,
+    '-c:v', 'h264_videotoolbox',
+    '-b:v', videoBitrate,
+    '-allow_sw', '1',
+    '-pix_fmt', 'yuv420p'
+  ];
+}
+
+export async function cleanupTorrentTemp() {
+  await rm(cacheDir, { recursive: true, force: true });
+}
+
+let shutdownStarted = false;
+
+export async function shutdownTorrentEngine({ cleanupTemp = true } = {}) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+
+  for (const key of [...transcodeSessions.keys()]) {
+    realCleanup(key);
+  }
+
+  await new Promise<void>((resolve) => {
+    try {
+      const destroyableClient = client as unknown as { destroy: (callback?: (error?: Error) => void) => void };
+      destroyableClient.destroy((error?: Error) => {
+        if (error) console.warn('[torrentEngine] Error cerrando WebTorrent:', error.message);
+        resolve();
+      });
+    } catch (error) {
+      console.warn('[torrentEngine] Error cerrando WebTorrent:', error instanceof Error ? error.message : String(error));
+      resolve();
+    }
+  });
+
+  activeTorrents.clear();
+  probeCache.clear();
+
+  if (cleanupTemp) {
+    await cleanupTorrentTemp();
+  }
+}
+
+export async function stopTorrent(infoHash: string) {
+  const torrent = activeTorrents.get(infoHash);
+  activeTorrents.delete(infoHash);
+  torrentDiagnostics.delete(infoHash);
+  for (const key of [...probeCache.keys()]) {
+    if (key.startsWith(`${infoHash}_`)) probeCache.delete(key);
+  }
+
+  if (!torrent?.destroy) return;
+
+  await new Promise<void>((resolve) => {
+    try {
+      torrent.destroy?.(() => resolve());
+      setTimeout(resolve, 1200).unref();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+export function getTorrentStats(infoHash: string, fileIdx = 0) {
   const torrent = activeTorrents.get(infoHash);
 
   if (!torrent) {
@@ -242,7 +362,8 @@ export function getTorrentStats(infoHash: string) {
       numPeers: 0,
       timeRemaining: 'calculando',
       timeRemainingMs: 0,
-      ready: false
+      ready: false,
+      file: null
     };
   }
 
@@ -261,6 +382,14 @@ export function getTorrentStats(infoHash: string) {
     });
   }
 
+  const selectedFile = torrent.ready ? selectOnlyFile(torrent, fileIdx) : null;
+  const fileDownloaded = selectedFile
+    ? Math.max(0, Math.min(selectedFile.length, selectedFile.downloaded ?? ((torrent.progress || 0) * selectedFile.length)))
+    : 0;
+  const fileProgress = selectedFile?.length
+    ? Math.max(0, Math.min(100, (fileDownloaded / selectedFile.length) * 100))
+    : 0;
+
   return {
     active: true,
     progress: Number(progress.toFixed(2)),
@@ -270,6 +399,14 @@ export function getTorrentStats(infoHash: string) {
     timeRemaining: formatTime(timeRemainingMs),
     timeRemainingMs,
     ready: torrent.ready,
+    file: selectedFile ? {
+      name: selectedFile.name,
+      length: selectedFile.length,
+      downloaded: Math.round(fileDownloaded),
+      progress: Number(fileProgress.toFixed(2)),
+      size: formatBytes(selectedFile.length),
+      downloadedSize: formatBytes(fileDownloaded)
+    } : null,
     diagnostics: torrentDiagnostics.get(infoHash) || {}
   };
 }
@@ -287,8 +424,38 @@ function isTextSubtitleCodec(codec?: string) {
   return /^(subrip|srt|ass|ssa|webvtt|mov_text)$/i.test(codec || '');
 }
 
-async function probeFile(file: TorrentFileLike) {
-  const input = file.createReadStream() as DestroyableReadable;
+function parseSubtitleTimestamp(value: string) {
+  const match = value.trim().match(/(?:(\d+):)?(\d{2}):(\d{2})\.(\d{3})/);
+  if (!match) return null;
+  return (Number(match[1] || 0) * 3600) + (Number(match[2]) * 60) + Number(match[3]) + (Number(match[4]) / 1000);
+}
+
+function formatSubtitleTimestamp(totalSeconds: number) {
+  const safe = Math.max(0, totalSeconds);
+  const hours = Math.floor(safe / 3600);
+  const minutes = Math.floor((safe % 3600) / 60);
+  const seconds = Math.floor(safe % 60);
+  const millis = Math.floor((safe - Math.floor(safe)) * 1000);
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+}
+
+function offsetVtt(vtt: string, offsetSeconds: number) {
+  if (!offsetSeconds) return vtt;
+  return vtt.split('\n').map((line) => {
+    if (!line.includes('-->')) return line;
+    const [startRaw, restRaw] = line.split('-->');
+    const [endRaw, ...settings] = restRaw.trim().split(/\s+/);
+    const start = parseSubtitleTimestamp(startRaw);
+    const end = parseSubtitleTimestamp(endRaw);
+    if (start === null || end === null || end <= offsetSeconds) return null;
+    const suffix = settings.length ? ` ${settings.join(' ')}` : '';
+    return `${formatSubtitleTimestamp(start - offsetSeconds)} --> ${formatSubtitleTimestamp(end - offsetSeconds)}${suffix}`;
+  }).filter((line) => line !== null).join('\n');
+}
+
+async function probeFile(infoHash: string, fileIdx: number) {
+  const port = process.env.PORT || 3000;
+  const inputUrl = `http://127.0.0.1:${port}/api/stream/${infoHash}?fileIdx=${fileIdx}`;
   const ffprobe = spawn('ffprobe', [
     '-v', 'error',
     '-analyzeduration', '2M',
@@ -296,18 +463,12 @@ async function probeFile(file: TorrentFileLike) {
     '-print_format', 'json',
     '-show_format',
     '-show_streams',
-    '-i', 'pipe:0'
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+    '-i', inputUrl
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
 
   let stdout = '';
   let stderr = '';
   const timeout = setTimeout(() => {
-    try {
-      input.unpipe(ffprobe.stdin);
-    } catch (e) {}
-    try {
-      input.destroy();
-    } catch (e) {}
     try {
       ffprobe.kill('SIGKILL');
     } catch (e) {}
@@ -331,34 +492,9 @@ async function probeFile(file: TorrentFileLike) {
       tags?: { language?: string; title?: string };
     }>;
   }>((resolve, reject) => {
-    input.on('error', (err: any) => {
-      if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
-        console.error('ffprobe input stream error:', err);
-      }
-      reject(err);
-    });
-    ffprobe.stdin.on('error', (err: any) => {
-      if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
-        console.error('ffprobe stdin error:', err);
-      }
-      reject(err);
-    });
-    ffprobe.stdout.on('error', (err: any) => {
-      if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
-        console.error('ffprobe stdout error:', err);
-      }
-      reject(err);
-    });
-
     ffprobe.on('error', reject);
     ffprobe.on('close', (code, signal) => {
       clearTimeout(timeout);
-      try {
-        input.unpipe(ffprobe.stdin);
-      } catch (e) {}
-      try {
-        input.destroy();
-      } catch (e) {}
       if (code || signal) {
         console.warn(`[probeFile] ffprobe termino con codigo ${code} (senal: ${signal}). Stderr: ${stderr}`);
         reject(new Error(stderr || `ffprobe termino con codigo ${code} (senal: ${signal})`));
@@ -371,17 +507,15 @@ async function probeFile(file: TorrentFileLike) {
         reject(error);
       }
     });
-
-    input.pipe(ffprobe.stdin);
   });
 }
 
-async function getOrProbeFile(infoHash: string, fileIdx: number, file: TorrentFileLike) {
+async function getOrProbeFile(infoHash: string, fileIdx: number) {
   const cacheKey = `${infoHash}_${fileIdx}`;
   if (probeCache.has(cacheKey)) {
     return probeCache.get(cacheKey)!;
   }
-  const promise = probeFile(file).catch((err) => {
+  const promise = probeFile(infoHash, fileIdx).catch((err) => {
     probeCache.delete(cacheKey);
     throw err;
   });
@@ -400,7 +534,7 @@ export async function getMediaTracks(infoHash: string, fileIdx = 0) {
     throw new Error('No se encontro archivo de video dentro del torrent.');
   }
 
-  const probe = await getOrProbeFile(infoHash, fileIdx, file);
+  const probe = await getOrProbeFile(infoHash, fileIdx);
   let audioOrder = 0;
   let subtitleOrder = 0;
 
@@ -456,22 +590,32 @@ export async function streamEmbeddedSubtitle(
     return;
   }
 
-  res.status(200);
-  res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
-
   const input = file.createReadStream() as DestroyableReadable;
-  const ffmpeg = spawn('ffmpeg', [
+  const offset = req.query.offset ? Number(req.query.offset) : 0;
+  const ffmpegArgs = [
     '-hide_banner',
     '-loglevel', 'error',
-    '-i', 'pipe:0',
+    '-i', 'pipe:0'
+  ];
+
+  if (Number.isFinite(offset) && offset > 0) {
+    ffmpegArgs.push('-ss', String(offset));
+  }
+
+  ffmpegArgs.push(
     '-map', `0:s:${Math.max(0, subtitleTrack)}?`,
     '-f', 'webvtt',
     'pipe:1'
-  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+  );
 
+  const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  let stdout = '';
   let stderr = '';
   let clientClosed = false;
+  ffmpeg.stdout.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString();
+  });
   ffmpeg.stderr.on('data', (chunk: Buffer) => {
     stderr += chunk.toString();
     if (stderr.length > 4000) stderr = stderr.slice(-4000);
@@ -529,11 +673,17 @@ export async function streamEmbeddedSubtitle(
     if (clientClosed) return;
     if (code && !res.destroyed) {
       res.destroy(new Error(stderr || `ffmpeg termino con codigo ${code}`));
+      return;
+    }
+    if (!res.destroyed) {
+      res.status(200);
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(offsetVtt(stdout, Number.isFinite(offset) ? offset : 0));
     }
   });
 
   input.pipe(ffmpeg.stdin);
-  ffmpeg.stdout.pipe(res, { end: true });
 }
 
 export async function streamTorrentFile(req: Request, res: Response, infoHash: string, fileIdx = 0) {
@@ -606,12 +756,14 @@ function realCleanup(key: string) {
   const session = transcodeSessions.get(key);
   if (session) {
     transcodeSessions.delete(key);
-    try {
-      session.input.unpipe(session.ffmpeg.stdin);
-    } catch (e) {}
-    try {
-      session.input.destroy();
-    } catch (e) {}
+    if (session.input) {
+      try {
+        session.input.unpipe(session.ffmpeg.stdin);
+      } catch (e) {}
+      try {
+        session.input.destroy();
+      } catch (e) {}
+    }
     try {
       session.ffmpeg.kill('SIGKILL');
     } catch (e) {}
@@ -627,185 +779,62 @@ export async function transcodeTorrentFile(req: Request, res: Response, infoHash
     return;
   }
 
-  const range = req.headers.range;
-  let start = 0;
-  let end = file.length - 1;
-  let timeOffset = 0;
-
-  if (range) {
-    const match = range.match(/bytes=(\d*)-(\d*)/);
-    if (match) {
-      start = match[1] ? Number(match[1]) : 0;
-      end = match[2] ? Number(match[2]) : file.length - 1;
-    }
-  }
-
-  const sessionKey = `${infoHash}_${fileIdx}_${audioTrack}`;
-  let session = transcodeSessions.get(sessionKey);
-
-  // Check if we can reuse the existing FFmpeg process
-  if (session && session.ffmpeg && !session.ffmpeg.killed) {
-    const expectedNextByte = session.lastSeekBytes + session.lastBytesWritten;
-    const gap = start - expectedNextByte;
-
-    if (gap >= 0 && gap < 5 * 1024 * 1024) {
-      // Continuation! Reuse existing FFmpeg process
-      if (session.cleanupTimeout) {
-        clearTimeout(session.cleanupTimeout);
-        session.cleanupTimeout = undefined;
-      }
-
-      // Detach old listeners
-      if (session.activeDataListener) {
-        session.ffmpeg.stdout.removeListener('data', session.activeDataListener);
-      }
-      if (session.activeEndListener) {
-        session.ffmpeg.stdout.removeListener('end', session.activeEndListener);
-      }
-
-      res.status(206);
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${file.length}`);
-      res.setHeader('Content-Length', end - start + 1);
-
-      let skipped = 0;
-      let bytesWritten = 0;
-      const limit = end - start + 1;
-
-      const onData = (chunk: Buffer) => {
-        if (res.destroyed) return;
-
-        let dataChunk = chunk;
-        if (skipped < gap) {
-          const needed = gap - skipped;
-          if (chunk.length <= needed) {
-            skipped += chunk.length;
-            return;
-          } else {
-            dataChunk = chunk.subarray(needed);
-            skipped = gap;
-          }
-        }
-
-        const remaining = limit - bytesWritten;
-        if (dataChunk.length >= remaining) {
-          res.write(dataChunk.subarray(0, remaining));
-          bytesWritten += remaining;
-          session!.lastBytesWritten = start + bytesWritten - session!.lastSeekBytes;
-          session!.ffmpeg.stdout.removeListener('data', onData);
-          res.end();
-        } else {
-          res.write(dataChunk);
-          bytesWritten += dataChunk.length;
-          session!.lastBytesWritten = start + bytesWritten - session!.lastSeekBytes;
-        }
-      };
-
-      const onEnd = () => {
-        if (!res.destroyed) res.end();
-      };
-
-      session.activeResponse = res;
-      session.activeDataListener = onData;
-      session.activeEndListener = onEnd;
-
-      session.ffmpeg.stdout.on('data', onData);
-      session.ffmpeg.stdout.on('end', onEnd);
-
-      const onClientClose = () => {
-        if (session!.activeDataListener) {
-          session!.ffmpeg.stdout.removeListener('data', session!.activeDataListener);
-          session!.activeDataListener = undefined;
-        }
-        if (session!.activeEndListener) {
-          session!.ffmpeg.stdout.removeListener('end', session!.activeEndListener);
-          session!.activeEndListener = undefined;
-        }
-        session!.activeResponse = undefined;
-
-        session!.cleanupTimeout = setTimeout(() => {
-          realCleanup(sessionKey);
-        }, 5000);
-      };
-      req.on('close', onClientClose);
-      return;
-    }
-  }
-
-  // If we cannot reuse, clean up old session before starting a new one
-  if (session) {
-    if (session.cleanupTimeout) clearTimeout(session.cleanupTimeout);
-    realCleanup(sessionKey);
-  }
-
-  // Calculate timeOffset for new stream
-  if (start > 0) {
-    try {
-      const probe = await getOrProbeFile(infoHash, fileIdx, file);
-      const duration = parseFloat(probe.format?.duration || '0') || 0;
-      if (duration > 0) {
-        timeOffset = (start / file.length) * duration;
-      } else {
-        timeOffset = start / 250000;
-      }
-    } catch (e) {
-      timeOffset = start / 250000;
-    }
-  }
-
-  res.setHeader('Accept-Ranges', 'bytes');
+  // Respond with 200 OK for progressive chunked MP4 stream (no ranges)
+  res.status(200);
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Accel-Buffering', 'no');
   res.setHeader('X-Strimio-Filename', encodeURIComponent(file.name));
-  res.setHeader('X-Strimio-Transcoded', 'audio-aac');
+  const hdrPreserved = shouldPreserveHdr(file.name);
+  res.setHeader('X-Strimio-Transcoded', videoEncoder === 'copy' || hdrPreserved ? 'video-copy+audio-aac' : `video-${videoEncoder}+audio-aac`);
+  res.setHeader('X-Strimio-HDR', hdrPreserved ? 'preserve' : 'off');
+  res.setHeader('X-Strimio-Tonemap', toneMapHdr && isLikelyHdrVideo(file.name) && !hdrPreserved ? 'hdr-to-sdr' : 'off');
 
-  if (range) {
-    res.status(206);
-    res.setHeader('Content-Range', `bytes ${start}-${end}/${file.length}`);
-    res.setHeader('Content-Length', end - start + 1);
-  } else {
-    res.status(200);
-    res.setHeader('Content-Length', file.length);
-  }
+  const startTime = req.query.startTime ? parseFloat(req.query.startTime as string) : 0;
+  const canUseLocalFile = existsSync(localFilePath(file)) && (torrent.progress || 0) > 0.98;
 
-  const input = file.createReadStream() as DestroyableReadable;
   const ffmpegArgs = [
     '-hide_banner',
     '-loglevel', 'error',
+    '-fflags', '+genpts',
     '-analyzeduration', '2M',
     '-probesize', '2M'
   ];
 
-  if (timeOffset > 0) {
-    ffmpegArgs.push('-ss', timeOffset.toFixed(2));
+  const port = process.env.PORT || 3000;
+  const inputUrl = `http://127.0.0.1:${port}/api/stream/${infoHash}?fileIdx=${fileIdx}`;
+
+  if (!Number.isNaN(startTime) && startTime > 0) {
+    ffmpegArgs.push('-ss', String(startTime));
   }
 
+  if (canUseLocalFile) {
+    ffmpegArgs.push('-i', localFilePath(file));
+    res.setHeader('X-Strimio-Seek-Mode', 'local-file');
+  } else {
+    ffmpegArgs.push('-i', inputUrl);
+    res.setHeader('X-Strimio-Seek-Mode', videoEncoder === 'copy' || hdrPreserved ? 'torrent-stream-video-copy' : 'torrent-stream-hw-transcode');
+  }
+
+  res.flushHeaders();
+
   ffmpegArgs.push(
-    '-i', 'pipe:0',
     '-map', '0:v:0',
     '-map', `0:a:${Math.max(0, audioTrack)}?`,
     '-sn',
-    '-c:v', 'copy',
+    ...videoTranscodeArgs(file.name),
     '-c:a', 'aac',
     '-b:a', '192k',
     '-ac', '2',
+    '-avoid_negative_ts', 'make_zero',
+    '-muxdelay', '0',
+    '-muxpreload', '0',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
     '-f', 'mp4',
     'pipe:1'
   );
 
-  const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
-
-  const newSession: TranscodeSession = {
-    ffmpeg,
-    input,
-    lastSeekTime: timeOffset,
-    lastSeekBytes: start,
-    lastBytesWritten: 0
-  };
-  transcodeSessions.set(sessionKey, newSession);
+  const ffmpeg = spawn('ffmpeg', ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
 
   let stderr = '';
   ffmpeg.stderr.on('data', (chunk: Buffer) => {
@@ -813,88 +842,40 @@ export async function transcodeTorrentFile(req: Request, res: Response, infoHash
     if (stderr.length > 4000) stderr = stderr.slice(-4000);
   });
 
-  input.on('error', (err: any) => {
-    if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET' && !err.message?.includes('closed before ending')) {
-      console.error('transcode input stream error:', err);
-    }
-    realCleanup(sessionKey);
-  });
-  ffmpeg.stdin.on('error', (err: any) => {
-    if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET' && !err.message?.includes('closed before ending')) {
-      console.error('ffmpeg stdin error:', err);
-    }
-    realCleanup(sessionKey);
-  });
+  const cleanup = () => {
+    try {
+      ffmpeg.kill('SIGKILL');
+    } catch (e) {}
+  };
+
+  req.on('close', cleanup);
+
   ffmpeg.stdout.on('error', (err: any) => {
-    if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET' && !err.message?.includes('closed before ending')) {
+    if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
       console.error('ffmpeg stdout error:', err);
     }
-    realCleanup(sessionKey);
+    cleanup();
   });
+
   res.on('error', (err: any) => {
     if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
       console.error('streaming response error:', err);
     }
+    cleanup();
   });
 
   ffmpeg.on('error', (error) => {
-    realCleanup(sessionKey);
+    cleanup();
     if (!res.headersSent) res.status(500).json({ error: error.message });
     else res.destroy(error);
   });
+
   ffmpeg.on('close', (code) => {
+    req.off('close', cleanup);
     if (code && !res.destroyed && !res.headersSent) {
       res.destroy(new Error(stderr || `ffmpeg termino con codigo ${code}`));
     }
-    realCleanup(sessionKey);
   });
 
-  input.pipe(ffmpeg.stdin);
-
-  let bytesWritten = 0;
-  const limit = end - start + 1;
-
-  const onData = (chunk: Buffer) => {
-    if (res.destroyed) return;
-    const remaining = limit - bytesWritten;
-    if (chunk.length >= remaining) {
-      res.write(chunk.subarray(0, remaining));
-      bytesWritten += remaining;
-      newSession.lastBytesWritten = start + bytesWritten - newSession.lastSeekBytes;
-      ffmpeg.stdout.removeListener('data', onData);
-      res.end();
-    } else {
-      res.write(chunk);
-      bytesWritten += chunk.length;
-      newSession.lastBytesWritten = start + bytesWritten - newSession.lastSeekBytes;
-    }
-  };
-
-  const onEnd = () => {
-    if (!res.destroyed) res.end();
-  };
-
-  newSession.activeResponse = res;
-  newSession.activeDataListener = onData;
-  newSession.activeEndListener = onEnd;
-
-  ffmpeg.stdout.on('data', onData);
-  ffmpeg.stdout.on('end', onEnd);
-
-  const onClientClose = () => {
-    if (newSession.activeDataListener) {
-      ffmpeg.stdout.removeListener('data', newSession.activeDataListener);
-      newSession.activeDataListener = undefined;
-    }
-    if (newSession.activeEndListener) {
-      ffmpeg.stdout.removeListener('end', newSession.activeEndListener);
-      newSession.activeEndListener = undefined;
-    }
-    newSession.activeResponse = undefined;
-
-    newSession.cleanupTimeout = setTimeout(() => {
-      realCleanup(sessionKey);
-    }, 5000);
-  };
-  req.on('close', onClientClose);
+  ffmpeg.stdout.pipe(res);
 }

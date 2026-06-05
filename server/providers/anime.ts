@@ -1,5 +1,8 @@
 import { Router } from 'express';
 import * as cheerio from 'cheerio';
+import { resolveUnifiedPlayback } from '../../src/unifiedContentResolver.js';
+import { authorizePlayback } from '../sessionStore.js';
+import type { PlaybackOption } from '../types.js';
 
 const router = Router();
 const requestTimeoutMs = 15000;
@@ -19,6 +22,18 @@ type AnimeSource = {
   authorized: boolean;
   blockedReason: string;
 };
+
+type TmdbTvResult = {
+  id: number;
+  name?: string;
+  original_name?: string;
+  original_language?: string;
+  origin_country?: string[];
+  first_air_date?: string;
+  popularity?: number;
+};
+
+type AnimeResolveOption = AnimeSource | PlaybackOption;
 
 type ScrapeContext = {
   baseUrl: string;
@@ -86,6 +101,32 @@ async function fetchJson<T>(url: string) {
   return response.json() as Promise<T>;
 }
 
+async function fetchTmdbJson<T>(url: string) {
+  const token = process.env.TMDB_BEARER_TOKEN;
+  const apiKey = process.env.TMDB_API_KEY;
+  const headers: Record<string, string> = { Accept: 'application/json' };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const requestUrl = new URL(url);
+  if (!token && apiKey && !requestUrl.searchParams.has('api_key')) {
+    requestUrl.searchParams.set('api_key', apiKey);
+  }
+
+  const response = await fetch(requestUrl, {
+    headers,
+    signal: AbortSignal.timeout(requestTimeoutMs)
+  });
+
+  if (!response.ok) {
+    throw new Error(`TMDB respondio ${response.status} al mapear anime.`);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 function absoluteUrl(url: string, baseUrl: string) {
   return new URL(url, baseUrl).toString();
 }
@@ -106,6 +147,65 @@ function slugify(value: string) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+function normalizeTitle(value: string) {
+  return slugify(value)
+    .replace(/\b(?:season|temporada|part|parte|cour|tv|movie|pelicula)\b/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function scoreTmdbAnimeCandidate(candidate: TmdbTvResult, requestedTitle: string) {
+  const requested = normalizeTitle(requestedTitle);
+  const name = normalizeTitle(candidate.name || '');
+  const originalName = normalizeTitle(candidate.original_name || '');
+  const country = candidate.origin_country || [];
+  let score = 0;
+
+  if (candidate.original_language === 'ja') score += 70;
+  if (country.includes('JP')) score += 60;
+  if (name === requested || originalName === requested) score += 80;
+  if (name.includes(requested) || requested.includes(name)) score += 25;
+  if (originalName.includes(requested) || requested.includes(originalName)) score += 20;
+  if (candidate.original_language === 'en' && !country.includes('JP')) score -= 30;
+  score += Math.min(Number(candidate.popularity || 0), 100) / 20;
+
+  return score;
+}
+
+async function findAnimeImdbIdFromTmdb(title: string) {
+  if (!process.env.TMDB_BEARER_TOKEN && !process.env.TMDB_API_KEY) {
+    throw new Error('TMDB no esta configurado; no puedo mapear anime a IMDb.');
+  }
+
+  const searchUrl = new URL('https://api.themoviedb.org/3/search/tv');
+  searchUrl.searchParams.set('query', title);
+  searchUrl.searchParams.set('language', 'es-ES');
+  searchUrl.searchParams.set('include_adult', 'false');
+
+  const searchData = await fetchTmdbJson<{ results?: TmdbTvResult[] }>(searchUrl.toString());
+  const candidates = (searchData.results || [])
+    .filter((candidate) => candidate.id)
+    .map((candidate) => ({ ...candidate, score: scoreTmdbAnimeCandidate(candidate, title) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8);
+
+  for (const candidate of candidates) {
+    const idsUrl = `https://api.themoviedb.org/3/tv/${candidate.id}/external_ids`;
+    const ids = await fetchTmdbJson<{ imdb_id?: string | null }>(idsUrl);
+    if (ids.imdb_id && /^tt\d+$/i.test(ids.imdb_id)) {
+      return {
+        imdbId: ids.imdb_id,
+        tmdbId: candidate.id,
+        title: candidate.name || candidate.original_name || title,
+        originalTitle: candidate.original_name || candidate.name || title,
+        score: candidate.score
+      };
+    }
+  }
+
+  throw new Error(`TMDB no encontro IMDb para el anime "${title}".`);
 }
 
 function extractM3u8Urls(html: string) {
@@ -135,6 +235,59 @@ function normalizeSource(url: string, index: number, server = 'Anime HLS'): Anim
     authorized: true,
     blockedReason: ''
   };
+}
+
+function isPlayableAnimeOption(option: unknown) {
+  if (!option || typeof option !== 'object') return false;
+  const candidate = option as { url?: unknown; infoHash?: unknown };
+  return Boolean(candidate.url || candidate.infoHash);
+}
+
+function extractEpisodeHints(title: string) {
+  const hints = new Set<number>();
+  const patterns = [
+    /\bS\d{1,2}E(\d{1,4})\b/gi,
+    /\bEP(?:ISODE)?\.?\s*0*(\d{1,4})\b/gi,
+    /\bCAP(?:ITULO|ITULO)?\.?\s*0*(\d{1,4})\b/gi,
+    /\bEpisodio\s*0*(\d{1,4})\b/gi,
+    /\b-\s*0*(\d{1,4})\s*-/gi,
+    /\b-\s*0*(\d{1,4})\s*\[/gi
+  ];
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(title))) {
+      const value = Number(match[1]);
+      if (Number.isInteger(value) && value > 0) hints.add(value);
+    }
+  }
+
+  return [...hints];
+}
+
+function scoreAnimePlaybackOption(option: PlaybackOption, episode: number) {
+  const text = `${option.title || ''} ${option.server || ''} ${option.provider || ''}`;
+  const lower = text.toLowerCase();
+  const hints = extractEpisodeHints(text);
+  let score = 0;
+
+  if (option.url && !option.infoHash) score += 15;
+  if (/\b(nyaasi|nekobt|horriblesubs|tokyotosho|anidex|erai-raws|toons?hub|judas|anime time)\b/i.test(text)) score += 45;
+  if (/\b(multi[-\s]?audio|dual[-\s]?audio|dual|latino|lat|spa|espanol|spanish|multi[-\s]?subs)\b/i.test(text)) score += 18;
+  if (hints.includes(episode)) score += 120;
+  if (hints.length && !hints.includes(episode)) score -= 80;
+  if (lower.includes('batch') && hints.includes(episode)) score += 20;
+  if (lower.includes('2023') && !lower.includes('anime')) score -= 35;
+
+  const qualityRank = {
+    '4K': 40,
+    '2160P': 40,
+    '1080P': 30,
+    '720P': 20,
+    '480P': 10
+  }[String(option.quality || '').toUpperCase()] || 0;
+
+  return score + qualityRank;
 }
 
 const classicExtractor: AnimeExtractor = {
@@ -523,20 +676,81 @@ async function resolveWithCompatibleApi(title: string, episode: number) {
   });
 }
 
-export async function resolveAnimeSources(title: string, episode: number) {
+async function resolveWithTorrentioAnimeFallback(title: string, episode: number, season = 1) {
+  const mapped = await findAnimeImdbIdFromTmdb(title);
+  const allowUnverified = process.env.STRIMIO_ALLOW_UNVERIFIED === 'true';
+  const result = await resolveUnifiedPlayback({
+    id: mapped.imdbId,
+    title: mapped.title,
+    type: 'series',
+    season,
+    episode,
+    animeTitle: title,
+    animeEpisode: episode,
+    torrentio: {
+      isAuthorizedStream: () => allowUnverified
+    },
+    annatar: {
+      baseUrl: process.env.ANNATAR_BASE_URL,
+      configPath: process.env.ANNATAR_CONFIG,
+      isAuthorizedStream: () => allowUnverified
+    },
+    stremio: {
+      streamAddons: process.env.STREMIO_STREAM_ADDONS
+    }
+  });
+
+  const options = (result.options || [])
+    .filter((option: PlaybackOption) => option.infoHash || option.url)
+    .map((option: PlaybackOption) => ({
+      ...option,
+      authorized: true,
+      blockedReason: ''
+    }))
+    .sort((a: PlaybackOption, b: PlaybackOption) => scoreAnimePlaybackOption(b, episode) - scoreAnimePlaybackOption(a, episode));
+
+  options
+    .filter((option: PlaybackOption) => option.infoHash)
+    .forEach((option: PlaybackOption) => authorizePlayback(option, mapped.imdbId));
+
+  return {
+    options,
+    errors: result.errors || [],
+    mapped
+  };
+}
+
+export async function resolveAnimeSources(title: string, episode: number, season = 1) {
   const errors: string[] = [];
-  const resolvers = [resolveWithAnitakuNative, resolveWithNativeHtmlScraper, resolveWithCompatibleApi];
+
+  try {
+    const torrentioResult = await resolveWithTorrentioAnimeFallback(title, episode, season);
+    if (torrentioResult.options.length) {
+      return {
+        options: torrentioResult.options,
+        errors: torrentioResult.errors,
+        provider: 'anime-torrentio',
+        mapped: torrentioResult.mapped
+      };
+    }
+    errors.push(...torrentioResult.errors);
+    errors.push(`Torrentio/Stremio no devolvio fuentes para ${torrentioResult.mapped.imdbId}:${season}:${episode}.`);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+
+  const resolvers = [resolveWithCompatibleApi, resolveWithAnitakuNative, resolveWithNativeHtmlScraper];
 
   for (const resolver of resolvers) {
     try {
       const options = await resolver(title, episode);
-      if (options.length) return { options, errors };
+      if (options.length) return { options, errors, provider: 'native-anime' };
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
 
-  return { options: [], errors };
+  return { options: [] as AnimeResolveOption[], errors, provider: 'anime-unavailable' };
 }
 
 router.get('/search', async (req, res) => {
@@ -565,6 +779,7 @@ router.get('/resolve', async (req, res) => {
   try {
     const title = String(req.query.title || '').trim();
     const episode = Number(req.query.episode || 1);
+    const season = Number(req.query.season || 1);
     const episodeId = String(req.query.episodeId || '').trim();
 
     if (episodeId) {
@@ -589,13 +804,14 @@ router.get('/resolve', async (req, res) => {
       return;
     }
 
-    const { options, errors } = await resolveAnimeSources(title, episode);
+    const { options, errors, provider, mapped } = await resolveAnimeSources(title, episode, season);
     res.json({
       count: options.length,
-      playableCount: options.length,
+      playableCount: options.filter(isPlayableAnimeOption).length,
       options,
       errors,
-      provider: 'native-anime'
+      provider,
+      mapped
     });
   } catch (error) {
     res.status(502).json({
