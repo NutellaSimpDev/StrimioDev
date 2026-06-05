@@ -15,6 +15,9 @@ const client = new WebTorrent({
   dht: true,
   natUpnp: true
 });
+client.on('error', (err: any) => {
+  console.error('[WebTorrent Client Error]', err.message || err);
+});
 const activeTorrents = new Map<string, TorrentLike>();
 const probeCache = new Map<string, Promise<any>>();
 const trackers = [
