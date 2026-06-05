@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Strimio Local Player</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.css" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #09090b;
+        --panel: #151518;
+        --line: rgba(255, 255, 255, 0.12);
+        --text: #f7f7f8;
+        --muted: #a1a1aa;
+        --accent: #e50914;
+        --ok: #2dd4bf;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        margin: 0;
+        background: #09090b;
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+        min-height: 100vh;
+      }
+
+      .panel {
+        padding: 22px;
+        border-right: 1px solid var(--line);
+        background: var(--panel);
+      }
+
+      .stage {
+        display: grid;
+        align-content: start;
+        gap: 18px;
+        padding: 22px;
+      }
+
+      h1,
+      h2 {
+        margin: 0;
+        letter-spacing: 0;
+      }
+
+      h1 {
+        font-size: 1.45rem;
+      }
+
+      h2 {
+        font-size: 1rem;
+      }
+
+      label {
+        display: grid;
+        gap: 7px;
+        margin-top: 16px;
+        color: var(--muted);
+        font-size: 0.78rem;
+        font-weight: 800;
+      }
+
+      input,
+      select,
+      button {
+        min-height: 42px;
+        border-radius: 8px;
+        font: inherit;
+      }
+
+      input,
+      select {
+        width: 100%;
+        padding: 0 12px;
+        color: var(--text);
+        background: rgba(255, 255, 255, 0.07);
+        border: 1px solid var(--line);
+        outline: 0;
+      }
+
+      button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 14px;
+        color: white;
+        font-weight: 900;
+        background: var(--accent);
+        border: 0;
+        cursor: pointer;
+      }
+
+      .row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .resolve {
+        width: 100%;
+        margin-top: 16px;
+      }
+
+      .options {
+        display: grid;
+        gap: 10px;
+        margin-top: 20px;
+      }
+
+      .option {
+        display: grid;
+        gap: 7px;
+        padding: 12px;
+        color: var(--text);
+        text-align: left;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      .option.active {
+        border-color: var(--ok);
+        box-shadow: inset 3px 0 0 var(--ok);
+      }
+
+      .option strong {
+        font-size: 0.92rem;
+      }
+
+      .option span,
+      .status {
+        color: var(--muted);
+        font-size: 0.78rem;
+        line-height: 1.45;
+      }
+
+      .player-wrap {
+        overflow: hidden;
+        background: black;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      video {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: #000;
+      }
+
+      .status {
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+
+      @media (max-width: 900px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .panel {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <h1>Strimio Local Player</h1>
+        <label>
+          IMDb ID
+          <input id="imdbId" value="tt0063350" />
+        </label>
+        <div class="row">
+          <label>
+            Tipo
+            <select id="type">
+              <option value="movie">movie</option>
+              <option value="series">series</option>
+            </select>
+          </label>
+          <label>
+            Idiomas subs
+            <input id="langs" value="lat,spa,eng" />
+          </label>
+        </div>
+        <button class="resolve" id="resolveButton" type="button">Resolver fuentes</button>
+        <div class="options" id="options"></div>
+      </section>
+
+      <section class="stage">
+        <div class="player-wrap">
+          <video id="player" controls crossorigin playsinline></video>
+        </div>
+        <div style="display: none;">
+          <label style="margin-top: 0;">
+            Pista de audio (remux/transcode)
+            <select id="audioSelect" disabled>
+              <option value="0">Audio original</option>
+            </select>
+          </label>
+        </div>
+        <div class="status" id="status">Listo para resolver fuentes locales.</div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.polyfilled.js"></script>
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const initialId = params.get('id');
+      const initialTitle = params.get('title');
+      const shouldAutoResolve = params.get('autoplayResolve') === 'true';
+      let player = null;
+      Object.defineProperty(window, 'playerElement', {
+        get() {
+          return player?.media || document.getElementById('player');
+        },
+        configurable: true
+      });
+      
+      let customDuration = 0;
+      const originalDurationDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
+      Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
+        get() {
+          if (customDuration > 0 && (this === playerElement || this.id === 'player' || this.id === 'modalVideo')) {
+            return customDuration;
+          }
+          return originalDurationDescriptor.get.call(this);
+        },
+        configurable: true
+      });
+
+      function setOverrideDuration(duration) {
+        customDuration = duration;
+        const el = playerElement;
+        if (el) el.dispatchEvent(new Event('durationchange'));
+      }
+
+      player = new Plyr(playerElement, {
+        captions: { active: true, language: 'es', update: true },
+        controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'fullscreen']
+      });
+      const optionsEl = document.getElementById('options');
+      const statusEl = document.getElementById('status');
+
+      function setStatus(message) {
+        statusEl.textContent = message;
+      }
+
+      function clearTracks() {
+        [...playerElement.querySelectorAll('track')].forEach((track) => track.remove());
+      }
+
+      async function attachSubtitles(option) {
+        clearTracks();
+        const imdbId = document.getElementById('imdbId').value.trim();
+        const langs = document.getElementById('langs').value.trim();
+        const params = new URLSearchParams({
+          id: imdbId,
+          langs,
+          infoHash: option.infoHash,
+          fileIdx: String(option.fileIdx ?? 0),
+          filename: option.title
+        });
+        const response = await fetch(`/api/subtitles/batch?${params}`);
+        const data = await response.json();
+
+        for (const subtitle of data.subtitles || []) {
+          const track = document.createElement('track');
+          track.kind = 'subtitles';
+          track.label = `${subtitle.label} (${subtitle.provider})`;
+          track.srclang = subtitle.lang;
+          track.src = subtitle.url;
+          if (!playerElement.querySelector('track')) track.default = true;
+          playerElement.appendChild(track);
+        }
+
+        if (data.subtitles?.length) {
+          setStatus(`Subtitulos cargados: ${data.subtitles.map((item) => item.label).join(', ')}`);
+        } else if (data.errors?.length) {
+          setStatus(`Sin subtitulos automaticos. ${data.errors[0]}`);
+        }
+      }
+
+      let currentOption = null;
+      let currentFileIdx = 0;
+      let selectedAudioTrack = 0;
+      let cachedAudioTracks = [];
+      let trackSwapTimeRestorationListener = null;
+      const audioSelect = document.getElementById('audioSelect');
+
+      function preferredAudioIndex(audioTracks) {
+        const preferred = audioTracks.find((track) => {
+          const text = `${track.label || ''} ${track.language || ''} ${track.title || ''}`.toLowerCase();
+          return /\b(lat|la|latin|latino|spa|es|esp|spanish|español|castellano)\b/i.test(text);
+        });
+        return preferred?.index ?? audioTracks[0]?.index ?? 0;
+      }
+
+      async function loadAudioTracks(option, fileIdx) {
+        audioSelect.innerHTML = '<option>Detectando pistas de audio...</option>';
+        audioSelect.disabled = true;
+        
+        try {
+          const params = new URLSearchParams({ fileIdx: String(fileIdx) });
+          const response = await fetch(`/api/stream/tracks/${option.infoHash}?${params}`);
+          if (!response.ok) throw new Error('No se pudieron leer pistas');
+          const data = await response.json();
+          const audio = data.audio || [];
+          cachedAudioTracks = audio;
+          
+          const duration = data.duration || 0;
+          if (duration > 0) {
+            setOverrideDuration(duration);
+          }
+          
+          if (!audio.length) {
+            audioSelect.innerHTML = '<option value="0">Audio original</option>';
+            audioSelect.disabled = true;
+            return;
+          }
+          
+          audioSelect.innerHTML = audio.map((track) => {
+            const suffix = [track.language, track.codec].filter(Boolean).join(' · ');
+            const label = suffix ? `${track.label} · ${suffix}` : track.label;
+            return `<option value="${track.index}">${label}</option>`;
+          }).join('');
+          audioSelect.value = String(selectedAudioTrack);
+          audioSelect.disabled = audio.length < 2;
+
+          setTimeout(() => {
+            setupPlyrAudioMenu(player, audio, selectedAudioTrack, (trackIdx) => {
+              selectedAudioTrack = trackIdx;
+              audioSelect.value = String(trackIdx);
+              const btn = document.querySelector('.option.active');
+              if (btn) {
+                playOption(option, btn, { keepTrackControls: true });
+              }
+            });
+          }, 200);
+        } catch (error) {
+          audioSelect.innerHTML = '<option value="0">Audio original</option>';
+          audioSelect.disabled = true;
+        }
+      }
+
+      async function playOption(option, button, settings = {}) {
+        document.querySelectorAll('.option').forEach((node) => node.classList.remove('active'));
+        button.classList.add('active');
+
+        if (!option.infoHash) {
+          setStatus('Esta opcion no trae infoHash reproducible.');
+          return;
+        }
+
+        currentOption = option;
+        currentFileIdx = option.fileIdx ?? 0;
+        
+        const prevDuration = customDuration;
+        if (!settings.keepTrackControls) {
+          selectedAudioTrack = 0;
+          setOverrideDuration(0);
+        } else {
+          setOverrideDuration(prevDuration);
+        }
+
+        const currentTime = playerElement.currentTime || 0;
+        
+        const params = new URLSearchParams({
+          fileIdx: String(currentFileIdx),
+          audioIdx: String(selectedAudioTrack)
+        });
+
+        // Load stream immediately
+        player.source = {
+          type: 'video',
+          title: option.title,
+          sources: [
+            {
+              src: `/api/stream/${option.infoHash}?${params}`,
+              type: 'video/mp4',
+              size: Number.parseInt(option.quality, 10) || 1080
+            }
+          ]
+        };
+
+        if (trackSwapTimeRestorationListener) {
+          playerElement.removeEventListener('loadedmetadata', trackSwapTimeRestorationListener);
+        }
+
+        if (settings.keepTrackControls && currentTime > 0) {
+          trackSwapTimeRestorationListener = () => {
+            playerElement.currentTime = currentTime;
+            player.play().catch(() => {});
+            playerElement.removeEventListener('loadedmetadata', trackSwapTimeRestorationListener);
+            trackSwapTimeRestorationListener = null;
+          };
+          playerElement.addEventListener('loadedmetadata', trackSwapTimeRestorationListener);
+        }
+
+        if (settings.keepTrackControls) {
+          setTimeout(() => {
+            setupPlyrAudioMenu(player, cachedAudioTracks, selectedAudioTrack, (trackIdx) => {
+              selectedAudioTrack = trackIdx;
+              audioSelect.value = String(trackIdx);
+              const btn = document.querySelector('.option.active');
+              if (btn) {
+                playOption(option, btn, { keepTrackControls: true });
+              }
+            });
+          }, 200);
+        }
+
+        setStatus(`Cargando stream ${option.quality}. Audio convert/remuxIdx: ${selectedAudioTrack}.`);
+
+        // Load metadata and subtitles in parallel in the background (fresh play only)
+        if (!settings.keepTrackControls) {
+          attachSubtitles(option).then(() => {
+            if (currentOption !== option) return;
+            return loadAudioTracks(option, currentFileIdx);
+          }).then(() => {
+            if (currentOption !== option) return;
+            const preferredIdx = preferredAudioIndex(cachedAudioTracks);
+            if (preferredIdx !== 0) {
+              selectedAudioTrack = preferredIdx;
+              audioSelect.value = String(preferredIdx);
+              const btn = document.querySelector('.option.active');
+              if (btn) {
+                playOption(option, btn, { keepTrackControls: true });
+              }
+            }
+          }).catch(err => {
+            console.error('Error al inicializar metadatos en segundo plano:', err);
+          });
+        }
+        
+        player.play().catch(() => setStatus('El navegador bloqueo autoplay; pulsa play en el reproductor.'));
+      }
+
+      audioSelect.addEventListener('change', () => {
+        if (!currentOption) return;
+        selectedAudioTrack = Number(audioSelect.value);
+        const btn = document.querySelector('.option.active');
+        if (btn) {
+          playOption(currentOption, btn, { keepTrackControls: true });
+        }
+      });
+
+      async function resolveSources() {
+        const imdbId = document.getElementById('imdbId').value.trim();
+        const type = document.getElementById('type').value;
+        optionsEl.innerHTML = '';
+        setStatus('Resolviendo Torrentio...');
+
+        const params = new URLSearchParams({
+          id: imdbId,
+          type,
+          allowUnverified: 'true'
+        });
+        const response = await fetch(`/api/resolve?${params}`);
+        const data = await response.json();
+
+        if (!response.ok) {
+          setStatus(data.error || 'No se pudo resolver.');
+          return;
+        }
+
+        const options = (data.options || []).filter((option) => option.infoHash).slice(0, 5);
+        setStatus(`Opciones listas: ${options.length}. Prioridad visual: español latino, español, inglés.`);
+
+        for (const option of options) {
+          const button = document.createElement('button');
+          button.className = 'option';
+          button.type = 'button';
+          button.innerHTML = `
+            <strong>${option.quality} · ${option.server}</strong>
+            <span>${option.title}</span>
+            <span>${option.infoHash} · fileIdx ${option.fileIdx ?? 0}</span>
+          `;
+          button.addEventListener('click', () => playOption(option, button));
+          optionsEl.appendChild(button);
+        }
+      }
+
+      document.getElementById('resolveButton').addEventListener('click', resolveSources);
+
+      if (initialId) {
+        document.getElementById('imdbId').value = initialId;
+        if (initialTitle) document.title = `Strimio · ${initialTitle}`;
+        if (shouldAutoResolve) resolveSources();
+      }
+
+      function setupPlyrAudioMenu(playerInstance, audioTracks, currentSelectedIdx, onTrackChange) {
+        const container = playerInstance.elements.container;
+        if (!container) return;
+
+        const homeMenu = container.querySelector('.plyr__menu__container__inner [id$="-home"] [role="menu"]');
+        const innerContainer = container.querySelector('.plyr__menu__container__inner');
+        if (!homeMenu || !innerContainer) return;
+
+        const existingBtn = homeMenu.querySelector('[target-panel="audio"]');
+        if (existingBtn) existingBtn.remove();
+        const existingPanel = innerContainer.querySelector('#plyr-settings-audio-panel');
+        if (existingPanel) existingPanel.remove();
+
+        if (!audioTracks || audioTracks.length < 2) {
+          return;
+        }
+
+        const audioBtn = document.createElement('button');
+        audioBtn.type = 'button';
+        audioBtn.className = 'plyr__control plyr__control--forward';
+        audioBtn.setAttribute('role', 'menuitem');
+        audioBtn.setAttribute('aria-haspopup', 'true');
+        audioBtn.setAttribute('target-panel', 'audio');
+        
+        const currentTrack = audioTracks.find(t => t.index === currentSelectedIdx) || audioTracks[0];
+        const currentLabel = currentTrack ? (currentTrack.language || currentTrack.label || 'Original') : 'Original';
+        
+        audioBtn.innerHTML = `
+          <span>Audio</span>
+          <span class="plyr__menu__value" id="plyr-audio-value">${currentLabel}</span>
+        `;
+        homeMenu.appendChild(audioBtn);
+
+        const audioPanel = document.createElement('div');
+        audioPanel.id = 'plyr-settings-audio-panel';
+        const speedPanel = innerContainer.querySelector('[id$="-speed"]');
+        audioPanel.className = speedPanel ? speedPanel.className : 'plyr__menu__panel';
+        audioPanel.setAttribute('hidden', '');
+
+        const backBtn = document.createElement('button');
+        backBtn.type = 'button';
+        backBtn.className = 'plyr__control plyr__control--back';
+        backBtn.setAttribute('target-panel', 'home');
+        backBtn.innerHTML = `
+          <span aria-hidden="true">Audio</span>
+        `;
+        audioPanel.appendChild(backBtn);
+
+        const menuList = document.createElement('div');
+        menuList.setAttribute('role', 'menu');
+        
+        audioTracks.forEach((track) => {
+          const trackBtn = document.createElement('button');
+          trackBtn.type = 'button';
+          trackBtn.setAttribute('role', 'menuitemradio');
+          trackBtn.className = 'plyr__control';
+          trackBtn.setAttribute('aria-checked', track.index === currentSelectedIdx ? 'true' : 'false');
+          trackBtn.value = String(track.index);
+          
+          const suffix = [track.language, track.codec].filter(Boolean).join(' · ');
+          const label = suffix ? `${track.label} · ${suffix}` : track.label;
+          trackBtn.innerHTML = `
+            <span>${label}</span>
+          `;
+          
+          trackBtn.addEventListener('click', () => {
+            menuList.querySelectorAll('[role="menuitemradio"]').forEach(btn => {
+              btn.setAttribute('aria-checked', 'false');
+            });
+            trackBtn.setAttribute('aria-checked', 'true');
+            
+            const valSpan = audioBtn.querySelector('#plyr-audio-value');
+            if (valSpan) valSpan.textContent = track.language || track.label || 'Original';
+            
+            audioPanel.setAttribute('hidden', '');
+            const homePanel = innerContainer.querySelector('[id$="-home"]');
+            if (homePanel) homePanel.removeAttribute('hidden');
+            
+            onTrackChange(track.index);
+          });
+          
+          menuList.appendChild(trackBtn);
+        });
+        
+        audioPanel.appendChild(menuList);
+        innerContainer.appendChild(audioPanel);
+
+        audioBtn.addEventListener('click', () => {
+          const homePanel = innerContainer.querySelector('[id$="-home"]');
+          if (homePanel) homePanel.setAttribute('hidden', '');
+          audioPanel.removeAttribute('hidden');
+        });
+
+        backBtn.addEventListener('click', () => {
+          audioPanel.setAttribute('hidden', '');
+          const homePanel = innerContainer.querySelector('[id$="-home"]');
+          if (homePanel) homePanel.removeAttribute('hidden');
+        });
+      }
+    </script>
+  </body>
+</html>

@@ -1,0 +1,48 @@
+{
+  "name": "strimio-dev",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "resolve:sources": "node scripts/resolve-sources.mjs",
+    "build:cli:macos": "node scripts/build-macos-sea.mjs",
+    "build:cli:macos:arm64": "node scripts/build-macos-sea.mjs --name resolve-sources-macos-arm64",
+    "build:cli:macos:x64": "node scripts/build-macos-sea.mjs --name resolve-sources-macos-x64",
+    "dev:streamer": "tsx server/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "adm-zip": "^0.5.17",
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "lucide-react": "latest",
+    "mime-types": "^3.0.2",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest",
+    "webtorrent": "^2.8.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "@types/adm-zip": "^0.5.8",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/mime-types": "^3.0.1",
+    "@types/node": "^25.9.1",
+    "esbuild": "^0.28.0",
+    "eslint": "latest",
+    "eslint-plugin-react-hooks": "latest",
+    "eslint-plugin-react-refresh": "latest",
+    "globals": "latest",
+    "postject": "^1.0.0-alpha.6",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}
