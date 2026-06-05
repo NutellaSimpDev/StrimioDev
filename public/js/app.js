@@ -67,14 +67,10 @@ let currentStartTime = 0;
 const originalDurationDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
 Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
   get() {
-    const native = originalDurationDescriptor.get.call(this);
-    if (Number.isFinite(native) && native > 0) {
-      return native;
-    }
     if (customDuration > 0 && (this === els.video || this.id === 'modalVideo' || this.id === 'player')) {
       return customDuration;
     }
-    return native;
+    return originalDurationDescriptor.get.call(this);
   },
   configurable: true
 });
