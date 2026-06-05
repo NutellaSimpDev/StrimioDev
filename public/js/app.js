@@ -67,10 +67,14 @@ let currentStartTime = 0;
 const originalDurationDescriptor = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'duration');
 Object.defineProperty(HTMLMediaElement.prototype, 'duration', {
   get() {
+    const native = originalDurationDescriptor.get.call(this);
+    if (Number.isFinite(native) && native > 0) {
+      return native;
+    }
     if (customDuration > 0 && (this === els.video || this.id === 'modalVideo' || this.id === 'player')) {
       return customDuration;
     }
-    return originalDurationDescriptor.get.call(this);
+    return native;
   },
   configurable: true
 });
@@ -691,6 +695,12 @@ async function playOption(option, card, settings = {}) {
 
   if (initialTracksData?.duration > 0) {
     setOverrideDuration(initialTracksData.duration);
+  } else {
+    let fallbackDuration = 1320;
+    if (activeMovie && activeMovie.mediaType === 'movie') {
+      fallbackDuration = 6000;
+    }
+    setOverrideDuration(fallbackDuration);
   }
 
   // 1. Set player source with default audio track (0)

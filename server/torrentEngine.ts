@@ -15,7 +15,7 @@ const client = new WebTorrent({
   dht: true,
   natUpnp: true
 });
-client.on('error', (err: any) => {
+(client as any).on('error', (err: any) => {
   console.error('[WebTorrent Client Error]', err.message || err);
 });
 const activeTorrents = new Map<string, TorrentLike>();
@@ -461,8 +461,8 @@ async function probeFile(infoHash: string, fileIdx: number) {
   const inputUrl = `http://127.0.0.1:${port}/api/stream/${infoHash}?fileIdx=${fileIdx}`;
   const ffprobe = spawn('ffprobe', [
     '-v', 'error',
-    '-analyzeduration', '2M',
-    '-probesize', '2M',
+    '-analyzeduration', '1M',
+    '-probesize', '1M',
     '-print_format', 'json',
     '-show_format',
     '-show_streams',
@@ -800,8 +800,8 @@ export async function transcodeTorrentFile(req: Request, res: Response, infoHash
     '-hide_banner',
     '-loglevel', 'error',
     '-fflags', '+genpts',
-    '-analyzeduration', '2M',
-    '-probesize', '2M'
+    '-analyzeduration', '1M',
+    '-probesize', '1M'
   ];
 
   const port = process.env.PORT || 3000;
