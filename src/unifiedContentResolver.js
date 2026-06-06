@@ -22,9 +22,63 @@ function configuredStreamAddons(addonsValue = '') {
     }));
 }
 
+function getLanguageScore(title) {
+  const normalized = String(title || '').toLowerCase();
+  
+  // Latino / Latin American Spanish flags and text
+  const isLatino = 
+    /\b(latino|lat|la|lats)\b/i.test(normalized) ||
+    /latin\s*american/i.test(normalized) ||
+    /dual\s*lat/i.test(normalized) ||
+    /audio\s*lat/i.test(normalized) ||
+    /🇲🇽|🇨🇱|🇨🇴|🇵🇪|🇦🇷|🇻🇪|🇧🇴|🇺🇾|🇵🇾|🇨🇷|🇵🇦|🇬🇹|🇸🇻|🇭🇳|🇳🇮|🇨🇺|🇩🇴|🇪🇨/.test(normalized);
+
+  if (isLatino) {
+    return 3;
+  }
+
+  // Spain Spanish / Castellano / SPA
+  const isSpanish = 
+    /\b(español|espanol|castellano|spa|esp|cast|es)\b/i.test(normalized) ||
+    /spanish/i.test(normalized) ||
+    /dual\s*esp/i.test(normalized) ||
+    /audio\s*esp/i.test(normalized) ||
+    /🇪🇸/.test(normalized);
+
+  if (isSpanish) {
+    return 2;
+  }
+
+  // English
+  const isEnglish = 
+    /\b(english|eng|en)\b/i.test(normalized) ||
+    /🇬🇧|🇺🇸|🇨🇦|🇦🇺|🇳🇿|🇮🇪/.test(normalized);
+
+  // Fallback / other languages
+  const isOtherLanguage =
+    /\b(french|fr|fra|italian|ita|portuguese|por|pt|german|ger|de|russian|rus|ru|multi)\b/i.test(normalized) ||
+    /🇫🇷|🇮🇹|🇵🇹|🇧🇷|🇩🇪|🇷🇺/.test(normalized);
+
+  if (isEnglish) {
+    return 1;
+  }
+  
+  if (isOtherLanguage) {
+    return 0;
+  }
+
+  return 1;
+}
+
 function sortPlaybackOptions(a, b) {
   if (Number(b.authorized) !== Number(a.authorized)) return Number(b.authorized) - Number(a.authorized);
+  
+  const scoreA = (a.rank || 0) + (getLanguageScore(a.title) * 12);
+  const scoreB = (b.rank || 0) + (getLanguageScore(b.title) * 12);
+  
+  if (scoreB !== scoreA) return scoreB - scoreA;
   if (b.rank !== a.rank) return b.rank - a.rank;
+  
   return a.provider.localeCompare(b.provider);
 }
 
