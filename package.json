@@ -12,7 +12,7 @@
     "build:cli:macos": "node scripts/build-macos-sea.mjs",
     "build:cli:macos:arm64": "node scripts/build-macos-sea.mjs --name resolve-sources-macos-arm64",
     "build:cli:macos:x64": "node scripts/build-macos-sea.mjs --name resolve-sources-macos-x64",
-    "dev:streamer": "tsx server/index.ts",
+    "dev:streamer": "tsx watch --include .env server/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
