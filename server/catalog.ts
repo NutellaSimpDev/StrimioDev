@@ -49,6 +49,8 @@ function mergeCatalogItems(primary: CatalogItem[], secondary: CatalogItem[], lim
   }).slice(0, limit);
 }
 
+const imdbIdCache = new Map<string, string>();
+
 function getTmdbToken() {
   const token = process.env.TMDB_BEARER_TOKEN;
   if (!token) {
@@ -65,7 +67,8 @@ async function tmdbFetch<T>(path: string, params: Record<string, string> = {}) {
     headers: {
       Authorization: `Bearer ${getTmdbToken()}`,
       Accept: 'application/json'
-    }
+    },
+    signal: AbortSignal.timeout(4000)
   });
 
   if (!response.ok) {
@@ -76,11 +79,27 @@ async function tmdbFetch<T>(path: string, params: Record<string, string> = {}) {
 }
 
 async function getMovieExternalIds(tmdbId: number) {
-  return tmdbFetch<TmdbExternalIds>(`/movie/${tmdbId}/external_ids`);
+  const cacheKey = `movie:${tmdbId}`;
+  if (imdbIdCache.has(cacheKey)) {
+    return { imdb_id: imdbIdCache.get(cacheKey) };
+  }
+  const res = await tmdbFetch<TmdbExternalIds>(`/movie/${tmdbId}/external_ids`);
+  if (res.imdb_id) {
+    imdbIdCache.set(cacheKey, res.imdb_id);
+  }
+  return res;
 }
 
 async function getTvExternalIds(tmdbId: number) {
-  return tmdbFetch<TmdbExternalIds>(`/tv/${tmdbId}/external_ids`);
+  const cacheKey = `tv:${tmdbId}`;
+  if (imdbIdCache.has(cacheKey)) {
+    return { imdb_id: imdbIdCache.get(cacheKey) };
+  }
+  const res = await tmdbFetch<TmdbExternalIds>(`/tv/${tmdbId}/external_ids`);
+  if (res.imdb_id) {
+    imdbIdCache.set(cacheKey, res.imdb_id);
+  }
+  return res;
 }
 
 function imageUrl(path?: string | null) {
@@ -134,7 +153,8 @@ async function fetchSeriesCatalog() {
 
 async function fetchAnimeCatalog() {
   const response = await fetch('https://api.jikan.moe/v4/top/anime?filter=airing&sfw=true&limit=20', {
-    headers: { Accept: 'application/json' }
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(4000)
   });
   if (!response.ok) throw new Error(`Jikan respondio ${response.status}.`);
   const data = await response.json() as {
