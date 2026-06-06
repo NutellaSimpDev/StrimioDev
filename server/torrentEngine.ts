@@ -63,7 +63,7 @@ type TorrentFileLike = {
   progress?: number;
   select?: () => void;
   deselect?: () => void;
-  createReadStream: (range?: { start?: number; end?: number }) => NodeJS.ReadableStream;
+  createReadStream: (range?: { start?: number; end?: number; highWaterMark?: number }) => NodeJS.ReadableStream;
 };
 
 type DestroyableReadable = NodeJS.ReadableStream & {
@@ -713,7 +713,7 @@ export async function streamTorrentFile(req: Request, res: Response, infoHash: s
 
   if (!range) {
     res.setHeader('Content-Length', file.length);
-    const stream = file.createReadStream();
+    const stream = file.createReadStream({ highWaterMark: 5 * 1024 * 1024 });
     const cleanup = () => {
       try {
         (stream as any).destroy();
@@ -743,7 +743,7 @@ export async function streamTorrentFile(req: Request, res: Response, infoHash: s
   res.status(206);
   res.setHeader('Content-Range', `bytes ${start}-${end}/${file.length}`);
   res.setHeader('Content-Length', end - start + 1);
-  const stream = file.createReadStream({ start, end });
+  const stream = file.createReadStream({ start, end, highWaterMark: 5 * 1024 * 1024 });
   const cleanup = () => {
     try {
       (stream as any).destroy();
@@ -800,6 +800,7 @@ export async function transcodeTorrentFile(req: Request, res: Response, infoHash
     '-hide_banner',
     '-loglevel', 'error',
     '-fflags', '+genpts',
+    '-drc_scale', '0',
     '-analyzeduration', '1M',
     '-probesize', '1M'
   ];
@@ -829,6 +830,7 @@ export async function transcodeTorrentFile(req: Request, res: Response, infoHash
     '-c:a', 'aac',
     '-b:a', '192k',
     '-ac', '2',
+    '-af', 'aresample=async=1',
     '-avoid_negative_ts', 'make_zero',
     '-muxdelay', '0',
     '-muxpreload', '0',
