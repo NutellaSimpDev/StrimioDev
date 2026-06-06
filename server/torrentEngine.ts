@@ -8,16 +8,24 @@ import mime from 'mime-types';
 import WebTorrent from 'webtorrent';
 
 const cacheDir = join(tmpdir(), 'strimio-dev-torrents');
-const client = new WebTorrent({
-  maxConns: 200,
-  torrentPort: Number(process.env.TORRENT_PORT || 6881),
-  dhtPort: Number(process.env.DHT_PORT || 6882),
-  dht: true,
-  natUpnp: true
-});
-(client as any).on('error', (err: any) => {
-  console.error('[WebTorrent Client Error]', err.message || err);
-});
+let clientInstance: WebTorrent | null = null;
+
+function getClient(): WebTorrent {
+  if (!clientInstance || clientInstance.destroyed) {
+    clientInstance = new WebTorrent({
+      maxConns: 200,
+      torrentPort: process.env.TORRENT_PORT ? Number(process.env.TORRENT_PORT) : 0,
+      dhtPort: process.env.DHT_PORT ? Number(process.env.DHT_PORT) : 0,
+      dht: true,
+      natUpnp: true
+    });
+    clientInstance.on('error', (err: any) => {
+      console.error('[WebTorrent Client Error]', err.message || err);
+    });
+  }
+  return clientInstance;
+}
+
 const activeTorrents = new Map<string, TorrentLike>();
 const probeCache = new Map<string, Promise<any>>();
 const trackers = [
@@ -174,7 +182,7 @@ export async function getTorrent(infoHash: string) {
 
   let torrent: TorrentLike;
   try {
-    torrent = client.add(magnetFor(infoHash), { announce: trackers, path: cacheDir }) as TorrentLike;
+    torrent = getClient().add(magnetFor(infoHash), { announce: trackers, path: cacheDir }) as TorrentLike;
     activeTorrents.set(infoHash, torrent);
   } catch (error) {
     throw new Error(`Error al agregar torrent: ${error instanceof Error ? error.message : String(error)}`);
@@ -204,7 +212,7 @@ export async function startTorrentDiscovery(infoHash: string, fileIdx = 0) {
   }
 
   torrentDiagnostics.set(infoHash, {});
-  const torrent = client.add(magnetFor(infoHash), { announce: trackers, path: cacheDir }) as TorrentLike;
+  const torrent = getClient().add(magnetFor(infoHash), { announce: trackers, path: cacheDir }) as TorrentLike;
   activeTorrents.set(infoHash, torrent);
   torrent.on('wire', () => {
     torrentDiagnostics.set(infoHash, {
@@ -312,18 +320,19 @@ export async function shutdownTorrentEngine({ cleanupTemp = true } = {}) {
     realCleanup(key);
   }
 
-  await new Promise<void>((resolve) => {
-    try {
-      const destroyableClient = client as unknown as { destroy: (callback?: (error?: Error) => void) => void };
-      destroyableClient.destroy((error?: Error) => {
-        if (error) console.warn('[torrentEngine] Error cerrando WebTorrent:', error.message);
+  if (clientInstance && !clientInstance.destroyed) {
+    await new Promise<void>((resolve) => {
+      try {
+        clientInstance!.destroy((error?: Error) => {
+          if (error) console.warn('[torrentEngine] Error cerrando WebTorrent:', error.message);
+          resolve();
+        });
+      } catch (error) {
+        console.warn('[torrentEngine] Error cerrando WebTorrent:', error instanceof Error ? error.message : String(error));
         resolve();
-      });
-    } catch (error) {
-      console.warn('[torrentEngine] Error cerrando WebTorrent:', error instanceof Error ? error.message : String(error));
-      resolve();
-    }
-  });
+      }
+    });
+  }
 
   activeTorrents.clear();
   probeCache.clear();
