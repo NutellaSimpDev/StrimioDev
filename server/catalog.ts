@@ -195,13 +195,22 @@ async function fetchCatalog(path: string) {
 }
 
 async function searchCatalog(query: string) {
-  const data = await tmdbFetch<{ results?: TmdbMovie[] }>('/search/movie', {
+  const data = await tmdbFetch<{ results?: (TmdbMovie & { media_type?: string })[] }>('/search/multi', {
     language: 'es-ES',
     query,
     include_adult: 'false'
   });
-  const movies = (data.results || []).slice(0, 24);
-  const settled = await Promise.allSettled(movies.map(normalizeMovie));
+  const items = (data.results || [])
+    .filter((item) => item.media_type === 'movie' || item.media_type === 'tv')
+    .slice(0, 24);
+  
+  const settled = await Promise.allSettled(items.map(async (item) => {
+    if (item.media_type === 'tv') {
+      return normalizeSeries(item);
+    } else {
+      return normalizeMovie(item);
+    }
+  }));
 
   return settled.flatMap((result) => {
     if (result.status !== 'fulfilled' || !result.value) return [];
