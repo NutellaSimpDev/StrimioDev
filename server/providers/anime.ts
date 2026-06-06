@@ -265,7 +265,40 @@ function extractEpisodeHints(title: string) {
   return [...hints];
 }
 
-function scoreAnimePlaybackOption(option: PlaybackOption, episode: number) {
+function parseAnimeTitleSeason(title: string): { cleanTitle: string; season: number } {
+  let cleanTitle = title.trim();
+  let season = 1;
+
+  const seasonPattern = /\b(?:season\s*(\d+)|(\d+)(?:st|nd|rd|th)\s*season)\b/i;
+  const match = cleanTitle.match(seasonPattern);
+  if (match) {
+    season = Number(match[1] || match[2]);
+    cleanTitle = cleanTitle.replace(seasonPattern, '').replace(/\s+-\s*$/, '').trim();
+  }
+
+  cleanTitle = cleanTitle.replace(/\s+/g, ' ').trim();
+  return { cleanTitle, season };
+}
+
+function extractSeasonHints(title: string): number[] {
+  const hints = new Set<number>();
+  const patterns = [
+    /\bS(\d{1,2})\b/gi,
+    /\bS(\d{1,2})E\d{1,4}\b/gi,
+    /\bSEASON\s*0*(\d{1,2})\b/gi,
+    /\b(\d{1,2})(?:st|nd|rd|th)\s*SEASON\b/gi
+  ];
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(title))) {
+      const value = Number(match[1]);
+      if (Number.isInteger(value) && value > 0) hints.add(value);
+    }
+  }
+  return [...hints];
+}
+
+function scoreAnimePlaybackOption(option: PlaybackOption, episode: number, season = 1) {
   const text = `${option.title || ''} ${option.server || ''} ${option.provider || ''}`;
   const lower = text.toLowerCase();
   const hints = extractEpisodeHints(text);
@@ -273,18 +306,58 @@ function scoreAnimePlaybackOption(option: PlaybackOption, episode: number) {
 
   if (option.url && !option.infoHash) score += 15;
   if (/\b(nyaasi|nekobt|horriblesubs|tokyotosho|anidex|erai-raws|toons?hub|judas|anime time)\b/i.test(text)) score += 45;
-  if (/\b(multi[-\s]?audio|dual[-\s]?audio|dual|latino|lat|spa|espanol|spanish|multi[-\s]?subs)\b/i.test(text)) score += 18;
+
+  // Language scoring: Latino > Spain Spanish > English > Other
+  let langScore = 10;
+  if (
+    /\b(latino|lat|la|lats)\b/i.test(lower) ||
+    /latin\s*american/i.test(lower) ||
+    /dual\s*lat/i.test(lower) ||
+    /audio\s*lat/i.test(lower) ||
+    /🇲🇽|🇨🇱|🇨🇴|🇵🇪|🇦🇷|🇻🇪|🇧🇴|🇺🇾|🇵🇾|🇨🇷|🇵🇦|🇬🇹|🇸🇻|🇭🇳|🇳🇮|🇨🇺|🇩🇴|🇪🇨/.test(lower)
+  ) {
+    langScore = 35;
+  } else if (
+    /\b(español|espanol|castellano|spa|esp|cast|es)\b/i.test(lower) ||
+    /spanish/i.test(lower) ||
+    /dual\s*esp/i.test(lower) ||
+    /audio\s*esp/i.test(lower) ||
+    /🇪🇸/.test(lower)
+  ) {
+    langScore = 25;
+  } else if (
+    /\b(french|fr|fra|italian|ita|portuguese|por|pt|german|ger|de|russian|rus|ru|multi)\b/i.test(lower) ||
+    /🇫🇷|🇮🇹|🇵🇹|🇧🇷|🇩🇪|🇷🇺/.test(lower)
+  ) {
+    langScore = 0;
+  }
+  score += langScore;
+
   if (hints.includes(episode)) score += 120;
   if (hints.length && !hints.includes(episode)) score -= 80;
   if (lower.includes('batch') && hints.includes(episode)) score += 20;
   if (lower.includes('2023') && !lower.includes('anime')) score -= 35;
 
+  // Season scoring and mismatch prevention
+  const seasonHints = extractSeasonHints(text);
+  if (seasonHints.length > 0) {
+    if (!seasonHints.includes(season)) {
+      score -= 150;
+    } else {
+      score += 50;
+    }
+  }
+
   const qualityRank = {
-    '4K': 40,
-    '2160P': 40,
-    '1080P': 30,
-    '720P': 20,
-    '480P': 10
+    '4K': 60,
+    '2160P': 60,
+    '1440P': 55,
+    '2K': 55,
+    '1080P': 50,
+    '720P': 40,
+    '576P': 35,
+    '480P': 30,
+    '360P': 20
   }[String(option.quality || '').toUpperCase()] || 0;
 
   return score + qualityRank;
@@ -707,7 +780,7 @@ async function resolveWithTorrentioAnimeFallback(title: string, episode: number,
       authorized: true,
       blockedReason: ''
     }))
-    .sort((a: PlaybackOption, b: PlaybackOption) => scoreAnimePlaybackOption(b, episode) - scoreAnimePlaybackOption(a, episode));
+    .sort((a: PlaybackOption, b: PlaybackOption) => scoreAnimePlaybackOption(b, episode, season) - scoreAnimePlaybackOption(a, episode, season));
 
   options
     .filter((option: PlaybackOption) => option.infoHash)
@@ -723,8 +796,16 @@ async function resolveWithTorrentioAnimeFallback(title: string, episode: number,
 export async function resolveAnimeSources(title: string, episode: number, season = 1) {
   const errors: string[] = [];
 
+  let cleanTitle = title;
+  let resolvedSeason = season;
+  if (season === 1) {
+    const parsed = parseAnimeTitleSeason(title);
+    cleanTitle = parsed.cleanTitle;
+    resolvedSeason = parsed.season;
+  }
+
   try {
-    const torrentioResult = await resolveWithTorrentioAnimeFallback(title, episode, season);
+    const torrentioResult = await resolveWithTorrentioAnimeFallback(cleanTitle, episode, resolvedSeason);
     if (torrentioResult.options.length) {
       return {
         options: torrentioResult.options,
@@ -734,7 +815,7 @@ export async function resolveAnimeSources(title: string, episode: number, season
       };
     }
     errors.push(...torrentioResult.errors);
-    errors.push(`Torrentio/Stremio no devolvio fuentes para ${torrentioResult.mapped.imdbId}:${season}:${episode}.`);
+    errors.push(`Torrentio/Stremio no devolvio fuentes para ${torrentioResult.mapped.imdbId}:${resolvedSeason}:${episode}.`);
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }

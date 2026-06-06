@@ -876,7 +876,7 @@
           return;
         }
 
-        const options = (data.options || []).filter((option) => option.infoHash).slice(0, 5);
+        const options = (data.options || []).filter((option) => option.infoHash).slice(0, 60);
         setStatus(`Opciones listas: ${options.length}. Prioridad visual: español latino, español, inglés.`);
 
         options.forEach((option, index) => {

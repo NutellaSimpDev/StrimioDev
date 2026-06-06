@@ -982,7 +982,7 @@ async function openMovie(movie) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudieron resolver fuentes.');
 
-    const options = (data.options || []).filter((option) => option.infoHash).slice(0, 30);
+    const options = (data.options || []).filter((option) => option.infoHash).slice(0, 60);
     els.modalStatus.textContent = `${options.length} fuentes encontradas para ${movie.title}.`;
     renderQualities(options);
   } catch (error) {
@@ -1008,7 +1008,7 @@ async function openAnimeEpisode(movie, episode) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || 'No se pudieron resolver fuentes anime.');
 
-    const options = (data.options || []).slice(0, 12);
+    const options = (data.options || []).slice(0, 60);
     els.modalStatus.textContent = `${options.length} fuentes anime encontradas.`;
     renderQualities(options);
   } catch (error) {

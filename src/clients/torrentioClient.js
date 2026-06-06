@@ -1,6 +1,6 @@
 const defaultTorrentioBaseUrl = 'https://torrentio.strem.fun';
 const defaultProviders = ['yts', 'eztv', 'rarbg', '1337x'];
-const defaultTorrentioConfigPath = 'providers=yts,eztv,rarbg,1337x,thepiratebay,kickasstorrents,torrentgalaxy,magnetdl,horriblesubs,nyaasi,tokyotosho,anidex,nekobt,cinecalidad,mejortorrent,wolfmax4k,besttorrents,torrent9,ilcorsaronero|language=spanish,latino|qualityfilter=scr,cam,480p|limit=30';
+const defaultTorrentioConfigPath = 'providers=yts,eztv,rarbg,1337x,thepiratebay,kickasstorrents,torrentgalaxy,magnetdl,horriblesubs,nyaasi,tokyotosho,anidex,nekobt,cinecalidad,mejortorrent,wolfmax4k,besttorrents,torrent9,ilcorsaronero|language=spanish,latino|qualityfilter=scr,cam,480p|limit=60';
 
 function assertContentType(type) {
   if (!['movie', 'series'].includes(type)) {
@@ -43,7 +43,7 @@ function buildTorrentioStreamUrl({ id, type, season, episode, providers, configP
 
 function extractQuality(stream) {
   const text = `${stream.title || ''} ${stream.name || ''} ${stream.behaviorHints?.filename || ''}`;
-  const match = text.match(/(?:^|[^\d])(?<quality>4k|2160p|1440p|1080p|720p|576p|480p|360p)(?:[^\d]|$)/i);
+  const match = text.match(/(?:^|[^\d])(?<quality>4k|2160p|1440p|2k|1080p|720p|576p|480p|360p)(?:[^\d]|$)/i);
 
   if (!match?.groups?.quality) return 'UNKNOWN';
   return match.groups.quality.toUpperCase();
@@ -53,8 +53,11 @@ function qualityRank(quality) {
   return {
     '4K': 60,
     '2160P': 60,
+    '1440P': 55,
+    '2K': 55,
     '1080P': 50,
     '720P': 40,
+    '576P': 35,
     '480P': 30,
     '360P': 20
   }[String(quality).toUpperCase()] || 0;

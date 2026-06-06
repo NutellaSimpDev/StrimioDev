@@ -1,6 +1,6 @@
 function extractQuality(stream) {
   const text = `${stream.title || ''} ${stream.name || ''} ${stream.behaviorHints?.filename || ''}`;
-  const match = text.match(/(?:^|[^\d])(?<quality>4k|2160p|1440p|1080p|720p|576p|480p|360p)(?:[^\d]|$)/i);
+  const match = text.match(/(?:^|[^\d])(?<quality>4k|2160p|1440p|2k|1080p|720p|576p|480p|360p)(?:[^\d]|$)/i);
 
   if (!match?.groups?.quality) return 'UNKNOWN';
   return match.groups.quality.toUpperCase();
@@ -10,8 +10,11 @@ function qualityRank(quality) {
   return {
     '4K': 60,
     '2160P': 60,
+    '1440P': 55,
+    '2K': 55,
     '1080P': 50,
     '720P': 40,
+    '576P': 35,
     '480P': 30,
     '360P': 20
   }[String(quality).toUpperCase()] || 0;

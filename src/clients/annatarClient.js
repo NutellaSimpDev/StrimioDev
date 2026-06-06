@@ -49,7 +49,7 @@ function buildAnnatarSearchUrl({
   season,
   episode,
   baseUrl = defaultAnnatarBaseUrl,
-  limit = 30,
+  limit = 60,
   timeout = 6
 }) {
   buildAnnatarStreamId({ id, type, season, episode });
@@ -69,7 +69,7 @@ function buildAnnatarHashesUrl({
   season,
   episode,
   baseUrl = defaultAnnatarBaseUrl,
-  limit = 30
+  limit = 60
 }) {
   buildAnnatarStreamId({ id, type, season, episode });
   const url = new URL(`${normalizeBaseUrl(baseUrl)}/api/v2/hashes/${id}`);
@@ -92,8 +92,11 @@ function qualityRank(quality) {
   return {
     '4K': 60,
     '2160P': 60,
+    '1440P': 55,
+    '2K': 55,
     '1080P': 50,
     '720P': 40,
+    '576P': 35,
     '480P': 30,
     '360P': 20
   }[String(quality).toUpperCase()] || 0;
@@ -246,7 +249,7 @@ export async function fetchAnnatarStreams(imdbId, type = 'movie', {
   episode,
   baseUrl = defaultAnnatarBaseUrl,
   configPath,
-  limit = 30,
+  limit = 60,
   timeout = 6,
   fetchImpl = fetch,
   isAuthorizedStream = () => false
