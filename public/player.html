@@ -259,7 +259,7 @@
         border: 1px solid rgba(255, 255, 255, 0.08) !important;
         border-radius: 8px !important;
         padding: 6px 14px !important;
-        font-size: clamp(14px, 2vw, 20px) !important;
+        font-size: var(--plyr-caption-size, clamp(14px, 2vw, 20px)) !important;
         font-weight: 500 !important;
         line-height: 1.5 !important;
         letter-spacing: -0.010em !important;
@@ -392,9 +392,22 @@
             </select>
           </label>
         </div>
-        <div class="status-container">
-          <span class="status-dot"></span>
-          <span id="status">Listo para resolver fuentes locales.</span>
+        <div class="status-container" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span class="status-dot"></span>
+            <span id="status">Listo para resolver fuentes locales.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <label style="margin: 0; font-size: 0.75rem; font-weight: 800; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; display: inline-flex; align-items: center; gap: 6px;">
+              Subtítulos:
+              <select id="subtitleSizeSelect" style="min-height: 30px; height: 30px; border-radius: 6px; padding: 0 8px; font-size: 0.75rem; background: rgba(255,255,255,0.07); border: 1px solid var(--line); color: var(--text); outline: 0;">
+                <option value="sm">Pequeño</option>
+                <option value="md" selected>Mediano</option>
+                <option value="lg">Grande</option>
+                <option value="xl">Extra Grande</option>
+              </select>
+            </label>
+          </div>
         </div>
       </section>
     </main>
@@ -1023,6 +1036,26 @@
             }
           }, 50);
         }
+      }
+
+      const subtitleSizeSelect = document.getElementById('subtitleSizeSelect');
+      if (subtitleSizeSelect) {
+        const applySubtitleSize = (size) => {
+          let cssVal = 'clamp(14px, 2vw, 20px)';
+          if (size === 'sm') cssVal = 'clamp(12px, 1.5vw, 16px)';
+          if (size === 'lg') cssVal = 'clamp(18px, 2.5vw, 26px)';
+          if (size === 'xl') cssVal = 'clamp(22px, 3.2vw, 34px)';
+          document.documentElement.style.setProperty('--plyr-caption-size', cssVal);
+          localStorage.setItem('strimio-sub-size', size);
+        };
+
+        const savedSize = localStorage.getItem('strimio-sub-size') || 'md';
+        subtitleSizeSelect.value = savedSize;
+        applySubtitleSize(savedSize);
+
+        subtitleSizeSelect.addEventListener('change', () => {
+          applySubtitleSize(subtitleSizeSelect.value);
+        });
       }
     </script>
   </body>

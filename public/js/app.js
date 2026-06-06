@@ -1228,6 +1228,35 @@ document.addEventListener('keydown', (event) => {
 setupCarouselButtons();
 loadCatalog();
 
+els.subtitleSelect.addEventListener('change', () => {
+  const val = els.subtitleSelect.value;
+  if (val === 'off') {
+    setSubtitleMode(-1);
+  } else {
+    setSubtitleMode(Number(val));
+  }
+});
+
+const subtitleSizeSelect = document.getElementById('subtitleSizeSelect');
+if (subtitleSizeSelect) {
+  const applySubtitleSize = (size) => {
+    let cssVal = 'clamp(14px, 2vw, 20px)';
+    if (size === 'sm') cssVal = 'clamp(12px, 1.5vw, 16px)';
+    if (size === 'lg') cssVal = 'clamp(18px, 2.5vw, 26px)';
+    if (size === 'xl') cssVal = 'clamp(22px, 3.2vw, 34px)';
+    document.documentElement.style.setProperty('--plyr-caption-size', cssVal);
+    localStorage.setItem('strimio-sub-size', size);
+  };
+
+  const savedSize = localStorage.getItem('strimio-sub-size') || 'md';
+  subtitleSizeSelect.value = savedSize;
+  applySubtitleSize(savedSize);
+
+  subtitleSizeSelect.addEventListener('change', () => {
+    applySubtitleSize(subtitleSizeSelect.value);
+  });
+}
+
 function setupPlyrAudioMenu(playerInstance, audioTracks, currentSelectedIdx, onTrackChange) {
   const container = playerInstance.elements.container;
   if (!container) return;

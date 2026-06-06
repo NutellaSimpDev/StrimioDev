@@ -152,7 +152,7 @@
         border: 0 !important;
         border-radius: 0 !important;
         padding: 0 8px !important;
-        font-size: clamp(14px, 2vw, 20px) !important;
+        font-size: var(--plyr-caption-size, clamp(14px, 2vw, 20px)) !important;
         font-weight: 700 !important;
         line-height: 1.5 !important;
         letter-spacing: 0 !important;
@@ -363,7 +363,8 @@
           display: none;
         }
         #playerModal .player-main .relative {
-          height: clamp(190px, calc(100vh - 8.5rem), 330px);
+          height: auto !important;
+          aspect-ratio: 16 / 9 !important;
         }
         #movieDescription {
           display: none;
@@ -510,7 +511,7 @@
         </header>
         <div class="player-body grid min-h-0 grid-cols-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_340px] lg:overflow-hidden">
           <section class="player-main scrollbar-hide grid min-h-0 content-start gap-3 overflow-visible p-3 sm:gap-4 sm:p-5 lg:overflow-y-auto">
-            <div class="grid gap-2 rounded-lg border border-white/10 bg-white/5 p-2.5 sm:grid-cols-2 sm:gap-3 sm:p-3">
+            <div class="grid gap-2 rounded-lg border border-white/10 bg-white/5 p-2.5 sm:grid-cols-3 sm:gap-3 sm:p-3">
               <label class="grid gap-1 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
                 Audio
                 <select id="audioSelect" class="min-w-0 rounded-md border border-white/10 bg-zinc-950 px-3 py-2 text-sm font-bold normal-case tracking-normal text-zinc-100 outline-none focus:border-red-500">
@@ -518,16 +519,26 @@
                 </select>
                 <span id="audioStatus" class="truncate text-[11px] font-medium normal-case tracking-normal text-zinc-400"></span>
               </label>
-              <label class="hidden gap-1 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+              <label class="grid gap-1 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
                 Subtítulos
-                <select id="subtitleSelect" class="min-w-0 rounded-md border border-white/10 bg-zinc-950 px-3 py-2 text-sm font-bold normal-case tracking-normal text-zinc-100 outline-none focus:border-red-500">
+                <select id="subtitleSelect" class="min-w-0 rounded-md border border-white/10 bg-zinc-950 px-3 py-2 text-sm font-bold normal-case tracking-normal text-zinc-100 outline-none focus:border-red-500" disabled>
                   <option value="off">Sin subtítulos</option>
                 </select>
                 <span id="subtitleStatus" class="truncate text-[11px] font-medium normal-case tracking-normal text-zinc-400"></span>
               </label>
+              <label class="grid gap-1 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">
+                Tamaño Letra
+                <select id="subtitleSizeSelect" class="min-w-0 rounded-md border border-white/10 bg-zinc-950 px-3 py-2 text-sm font-bold normal-case tracking-normal text-zinc-100 outline-none focus:border-red-500">
+                  <option value="sm">Pequeño</option>
+                  <option value="md" selected>Mediano</option>
+                  <option value="lg">Grande</option>
+                  <option value="xl">Extra Grande</option>
+                </select>
+                <span class="truncate text-[11px] font-medium normal-case tracking-normal text-zinc-400">Escala de subtítulos</span>
+              </label>
             </div>
 
-            <div class="relative h-[clamp(220px,42vh,520px)] overflow-hidden rounded-lg bg-black sm:h-[clamp(300px,50vh,520px)]">
+            <div class="relative aspect-video w-full overflow-hidden rounded-lg bg-black">
               <video id="modalVideo" class="h-full w-full" controls crossorigin playsinline></video>
               <div id="loadingOverlay" class="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/45 px-6 text-center opacity-0 backdrop-blur-[2px] z-20">
                 <div id="loadingOverlayCard" class="grid place-items-center">
