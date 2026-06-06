@@ -111,7 +111,7 @@ function setOverrideDuration(duration) {
 
 player = new Plyr(els.video, {
   captions: { active: true, language: 'es', update: true },
-  controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'captions', 'settings', 'fullscreen']
+  controls: ['play-large', 'play', 'progress', 'current-time', 'mute', 'volume', 'captions', 'settings', 'fullscreen']
 });
 
 let searchTimer = null;
